@@ -1,0 +1,77 @@
+{
+	"info": {
+		"_postman_id": "8f2b1c3d-4e5f-6a7b-8c9d-0e1f2a3b4c5d",
+		"name": "RAG Analysis API",
+		"schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json"
+	},
+	"item": [
+		{
+			"name": "Document Analysis",
+			"item": [
+				{
+					"name": "Analyze Document",
+					"request": {
+						"method": "POST",
+						"header": [
+							{
+								"key": "Authorization",
+								"value": "Bearer {{token}}",
+								"type": "text"
+							}
+						],
+						"url": {
+							"raw": "{{base_url}}/api/v1/documents/{{document_id}}/analyze",
+							"host": ["{{base_url}}"],
+							"path": ["api", "v1", "documents", "{{document_id}}", "analyze"]
+						}
+					},
+					"response": []
+				},
+				{
+					"name": "Get Analysis Task Status",
+					"request": {
+						"method": "GET",
+						"header": [
+							{
+								"key": "Authorization",
+								"value": "Bearer {{token}}",
+								"type": "text"
+							}
+						],
+						"url": {
+							"raw": "{{base_url}}/api/v1/testsets/tasks/{{task_id}}",
+							"host": ["{{base_url}}"],
+							"path": ["api", "v1", "testsets", "tasks", "{{task_id}}"]
+						}
+					},
+					"response": []
+				},
+				{
+					"name": "List Document Chunks",
+					"request": {
+						"method": "GET",
+						"header": [
+							{
+								"key": "Authorization",
+								"value": "Bearer {{token}}",
+								"type": "text"
+							}
+						],
+						"url": {
+							"raw": "{{base_url}}/api/v1/documents/{{document_id}}/chunks?keyword=测试&entity_type=产品A&skip=0&limit=10",
+							"host": ["{{base_url}}"],
+							"path": ["api", "v1", "documents", "{{document_id}}", "chunks"],
+							"query": [
+								{ "key": "keyword", "value": "测试" },
+								{ "key": "entity_type", "value": "产品A" },
+								{ "key": "skip", "value": "0" },
+								{ "key": "limit", "value": "10" }
+							]
+						}
+					},
+					"response": []
+				}
+			]
+		}
+	]
+}

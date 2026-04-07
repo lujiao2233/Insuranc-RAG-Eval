@@ -1,0 +1,7 @@
+RAG Evaluation System - Test Document
+    
+Section 1: Introduction
+This is a comprehensive test document for RAG evaluation. The system will analyze this document and generate test questions. RAG systems combine retrieval and generation capabilities. Evaluation metrics include relevance, faithfulness, and accuracy.
+
+Section 2: Technical Details
+The key components of a RAG system are: 1. Document Store - stores and indexes documents for retrieval, 2. Retriever - finds relevant documents based on queries, 3. Generator - LLM that generates responses using retrieved context.

@@ -1,0 +1,49 @@
+@use "sass:map";
+
+$breakpoints: (
+  xs: 576px,
+  sm: 768px,
+  md: 992px,
+  lg: 1200px,
+  xl: 1920px
+);
+
+$primary-color: #409eff;
+$success-color: #67c23a;
+$warning-color: #e6a23c;
+$danger-color: #f56c6c;
+$info-color: #909399;
+
+$text-primary: #303133;
+$text-regular: #606266;
+$text-secondary: #909399;
+$text-placeholder: #c0c4cc;
+
+$border-color-base: #dcdfe6;
+$border-color-light: #e4e7ed;
+$border-color-lighter: #ebeef5;
+
+$bg-color: #ffffff;
+$bg-page: #f5f7fa;
+$bg-overlay: #ffffff;
+
+$font-size-base: 14px;
+$font-size-small: 13px;
+$font-size-large: 16px;
+$font-size-extra-large: 18px;
+
+$spacing-xs: 4px;
+$spacing-sm: 8px;
+$spacing-md: 16px;
+$spacing-lg: 24px;
+$spacing-xl: 32px;
+
+$border-radius-base: 4px;
+$border-radius-small: 2px;
+$border-radius-large: 8px;
+
+$box-shadow-base: 0 2px 12px 0 rgba(0, 0, 0, 0.1);
+$box-shadow-light: 0 2px 8px 0 rgba(0, 0, 0, 0.06);
+
+$transition-duration: 0.3s;
+$transition-function: ease;
