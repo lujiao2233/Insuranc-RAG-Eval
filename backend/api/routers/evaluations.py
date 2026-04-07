@@ -115,11 +115,6 @@ def run_evaluation_task(
                 metrics=individual_result.get("metrics", {})
             )
             db.add(eval_result)
-            
-            if question_id:
-                question = db.query(Question).filter(Question.id == question_id).first()
-                if question and individual_result.get("generated_answer"):
-                    question.answer = individual_result.get("generated_answer")
         
         evaluation.status = "completed"
         evaluation.evaluated_questions = len(result.get("individual_results", []))
@@ -230,14 +225,18 @@ async def create_evaluation(
         raise HTTPException(status_code=404, detail="测试集不存在")
     
     question_count = db.query(Question).filter(Question.testset_id == str(evaluation_data.testset_id)).count()
-    unanswered_count = db.query(Question).filter(
+    
+    # 检查是否所有问题都填充了答案和检索上下文 (context)
+    unanswered_questions = db.query(Question).filter(
         Question.testset_id == str(evaluation_data.testset_id),
-        ((Question.answer.is_(None)) | (Question.answer == ""))
+        ((Question.answer.is_(None)) | (Question.answer == "") | 
+         (Question.context.is_(None)) | (Question.context == ""))
     ).count()
-    if unanswered_count > 0:
+    
+    if unanswered_questions > 0:
         raise HTTPException(
             status_code=400,
-            detail=f"测试集中有 {unanswered_count} 个问题未填充模型答案，无法评估。请先导出并填充后重新上传。"
+            detail=f"测试集中有 {unanswered_questions} 个问题未填充模型答案(answer)或检索上下文(context)，无法评估。请先导出并填充后重新上传。"
         )
     
     evaluation = EvaluationModel(
