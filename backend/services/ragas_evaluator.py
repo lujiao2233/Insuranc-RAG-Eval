@@ -185,14 +185,12 @@ class RagasEvaluator:
                         rows, evaluation_metrics, start_time
                     )
                 else:
-                    logger.warning("DeepEval不可用，使用模拟评估")
-                    return _mock_evaluate(rows, evaluation_metrics, start_time)
+                    raise RuntimeError("DeepEval不可用，请确保已安装 deepeval 库并正确配置。")
             
             if RAGAS_AVAILABLE:
                 return self._evaluate_with_ragas_rows(rows, evaluation_metrics, start_time, effective_config)
             else:
-                logger.warning("RAGAS不可用，使用模拟评估")
-                return _mock_evaluate(rows, evaluation_metrics, start_time)
+                raise RuntimeError("RAGAS不可用，请确保已安装 ragas 库并正确配置。")
 
         except Exception as e:
             logger.error(f"评估失败: {str(e)}")
