@@ -22,21 +22,6 @@
         />
         
         <el-select 
-          v-model="documentFilter" 
-          placeholder="关联文档" 
-          clearable
-          style="width: 200px; margin-right: 10px;"
-          @change="filterTestsets"
-        >
-          <el-option
-            v-for="doc in documents"
-            :key="doc.id"
-            :label="doc.filename"
-            :value="doc.id"
-          />
-        </el-select>
-        
-        <el-select 
           v-model="methodFilter" 
           placeholder="生成方式" 
           clearable
@@ -90,8 +75,8 @@
               <el-button type="primary" size="small" class="fixed-width-btn" @click="viewTestset(row.id)">
                 查看
               </el-button>
-              <el-button type="success" size="small" class="fixed-width-btn" @click="startEvaluation(row)">
-                评估
+              <el-button type="success" size="small" class="fixed-width-btn" @click="runExecution(row)">
+                执行
               </el-button>
             </div>
             <div class="button-row">
@@ -359,7 +344,6 @@ const pageSize = ref(10)
 
 // 筛选相关
 const searchQuery = ref('')
-const documentFilter = ref('')
 const methodFilter = ref('')
 
 // 生成配置相关
@@ -476,11 +460,15 @@ const getMethodText = (method: string) => {
   return method === 'auto' ? '自动生成' : '手动创建'
 }
 
+const isUploadedTestset = (testset: TestSet) => {
+  return testset.generation_method === 'csv_import' || Boolean(testset.metadata?.imported)
+}
+
 const fetchTestsets = async () => {
   loading.value = true
   try {
     const response = await testsetApi.getTestSets()
-    testsets.value = response.items
+    testsets.value = response.items.filter(item => !isUploadedTestset(item))
     filterTestsets()
   } catch (error) {
     ElMessage.error('获取测试集列表失败')
@@ -526,10 +514,6 @@ const filterTestsets = () => {
     )
   }
   
-  if (documentFilter.value) {
-    result = result.filter(ts => ts.document_id === documentFilter.value)
-  }
-  
   if (methodFilter.value) {
     result = result.filter(ts => ts.generation_method === methodFilter.value)
   }
@@ -551,8 +535,8 @@ const viewTestset = (id: string) => {
   router.push(`/testsets/${id}`)
 }
 
-const startEvaluation = (testset: TestSet) => {
-  router.push(`/evaluations?testset_id=${testset.id}`)
+const runExecution = (_testset: TestSet) => {
+  ElMessage.info('功能待开发')
 }
 
 const handleDelete = async (testset: TestSet) => {

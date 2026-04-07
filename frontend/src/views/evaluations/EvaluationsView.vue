@@ -174,6 +174,10 @@ const evaluateRules: FormRules = {
   evaluation_method: [{ required: true, message: '请选择评估方法', trigger: 'change' }]
 }
 
+const isUploadedTestset = (testset: TestSet) => {
+  return testset.generation_method === 'csv_import' || Boolean(testset.metadata?.imported)
+}
+
 const filteredTestsets = computed(() => {
   let result = [...testsets.value]
   const query = keyword.value.trim().toLowerCase()
@@ -193,7 +197,7 @@ const fetchTestsets = async () => {
   loading.value = true
   try {
     const response = await testsetApi.getTestSets({ limit: 1000 })
-    testsets.value = response.items
+    testsets.value = response.items.filter(item => isUploadedTestset(item))
   } catch (error) {
     ElMessage.error('获取测试集列表失败')
   } finally {
