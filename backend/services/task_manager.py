@@ -5,6 +5,7 @@ import threading
 import uuid
 from datetime import datetime
 from typing import Any, Dict, Optional, Callable, List
+from concurrent.futures import ThreadPoolExecutor
 
 from utils.logger import get_logger
 
@@ -23,9 +24,10 @@ class TaskManager:
         - failed: 执行失败
     """
     
-    def __init__(self):
+    def __init__(self, max_workers: int = 10):
         self._lock = threading.Lock()
         self._tasks: Dict[str, Dict[str, Any]] = {}
+        self._executor = ThreadPoolExecutor(max_workers=max_workers, thread_name_prefix="TaskManager")
     
     def create_task(self, task_type: str, params: Optional[Dict[str, Any]] = None) -> str:
         """创建新任务
@@ -71,11 +73,10 @@ class TaskManager:
                 target(*args, **kwargs)
             except Exception as e:
                 self.fail_task(task_id, str(e))
-                logger.error(f"任务 {task_id} 执行失败: {e}")
+                logger.error(f"任务 {task_id} 执行失败: {e}", exc_info=True)
         
-        thread = threading.Thread(target=runner, daemon=True)
-        thread.start()
-        logger.info(f"启动任务: {task_id}")
+        self._executor.submit(runner)
+        logger.info(f"提交任务到线程池: {task_id}")
     
     def update_status(self, task_id: str, status: str) -> None:
         """更新任务状态"""

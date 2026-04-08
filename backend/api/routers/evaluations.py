@@ -104,6 +104,7 @@ def run_evaluation_task(
         task_manager.update_progress(task_id, 0.8, "保存评估结果")
         task_manager.append_log(task_id, f"评估完成，保存 {len(result.get('individual_results', []))} 个结果")
         
+        eval_results_to_add = []
         for idx, individual_result in enumerate(result.get("individual_results", [])):
             question_id = individual_result.get("question_id")
             
@@ -116,7 +117,10 @@ def run_evaluation_task(
                 context=individual_result.get("context", ""),
                 metrics=individual_result.get("metrics", {})
             )
-            db.add(eval_result)
+            eval_results_to_add.append(eval_result)
+            
+        if eval_results_to_add:
+            db.add_all(eval_results_to_add)
         
         evaluation.status = "completed"
         evaluation.evaluated_questions = len(result.get("individual_results", []))
