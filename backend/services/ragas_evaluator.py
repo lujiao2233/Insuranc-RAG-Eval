@@ -105,7 +105,6 @@ class RagasEvaluator:
     def __init__(self):
         self.evaluation_config = self._load_evaluation_config()
         self.performance_thresholds = self._load_performance_thresholds()
-        self.evaluation_history: List[Dict[str, Any]] = []
 
     def _load_evaluation_config(self) -> Dict[str, Any]:
         return {
@@ -450,7 +449,6 @@ class RagasEvaluator:
             "overall_metrics": overall_metrics,
             "evaluation_metrics": evaluation_metrics,
         }
-        self.evaluation_history.append(out)
         logger.info(f"RAGAS评估完成，评估了{len(results)}个问题，耗时{evaluation_time:.2f}秒")
         return out
 
@@ -547,6 +545,8 @@ class RagasEvaluator:
 
         qwen_llm = QwenDeepEvalLLM(runtime_cfg)
 
+        from concurrent.futures import ThreadPoolExecutor, as_completed
+
         available_metrics: Dict[str, Any] = {
             "answer_relevance": AnswerRelevancyMetric,
             "faithfulness": FaithfulnessMetric,
@@ -559,8 +559,7 @@ class RagasEvaluator:
         if not metric_classes:
             raise RuntimeError("DeepEval评估指标加载失败")
 
-        results: List[Dict[str, Any]] = []
-        for row in rows:
+        def evaluate_single_row(row: Dict[str, Any]) -> Dict[str, Any]:
             ctx_value = row.get("contexts")
             if ctx_value is None:
                 ctx_value = []
@@ -582,18 +581,29 @@ class RagasEvaluator:
             )
             
             metrics_out: Dict[str, float] = {}
+            reasons_out: Dict[str, str] = {}
             for metric_name, metric_cls in metric_classes.items():
                 try:
-                    metric = metric_cls(model=qwen_llm)
+                    # 注入 include_reason=True 强制要求 LLM 输出评估理由
+                    metric = metric_cls(model=qwen_llm, include_reason=True)
                 except TypeError:
-                    metric = metric_cls()
+                    metric = metric_cls(model=qwen_llm)
                 try:
                     metric.measure(test_case)
                     score_value = float(getattr(metric, "score", 0.0))
+                    reason_value = getattr(metric, "reason", None)
                 except Exception as e:
+                    error_msg = str(e).lower()
+                    # 对于严重错误（如网络断开、鉴权失败、限流等），直接向外抛出异常中断评估
+                    if any(kw in error_msg for kw in ["api key", "unauthorized", "401", "403", "429", "connection", "timeout", "rate limit"]):
+                        raise RuntimeError(f"大模型接口调用发生严重错误: {e}")
                     logger.warning(f"DeepEval metric {metric_name} 计算失败: {e}")
                     score_value = 0.0
+                    reason_value = f"评估失败: {str(e)}"
+                
                 metrics_out[metric_name] = score_value
+                if reason_value:
+                    reasons_out[metric_name] = str(reason_value)
 
             context_value = row.get("contexts", [])
             if isinstance(context_value, list):
@@ -601,17 +611,36 @@ class RagasEvaluator:
             else:
                 context_str = str(context_value) if context_value is not None else ""
 
-            results.append(
-                {
-                    "question_id": row.get("question_id", ""),
-                    "question": row.get("question", ""),
-                    "expected_answer": row.get("ground_truth", ""),
-                    "generated_answer": row.get("answer", ""),
-                    "context": context_str,
-                    "metrics": metrics_out,
-                    "evaluation_time": time.time() - start_time,
-                }
-            )
+            return {
+                "question_id": row.get("question_id", ""),
+                "question": row.get("question", ""),
+                "expected_answer": row.get("ground_truth", ""),
+                "generated_answer": row.get("answer", ""),
+                "context": context_str,
+                "metrics": metrics_out,
+                "reasons": reasons_out,
+                "evaluation_time": time.time() - start_time,
+            }
+
+        results: List[Dict[str, Any]] = []
+        
+        # 使用多线程并发评估各个题目，极大提升执行效率
+        with ThreadPoolExecutor(max_workers=min(10, len(rows) or 1)) as executor:
+            future_to_row = {executor.submit(evaluate_single_row, row): row for row in rows}
+            for future in as_completed(future_to_row):
+                try:
+                    result = future.result()
+                    results.append(result)
+                except Exception as exc:
+                    raise RuntimeError(f"DeepEval 并发执行时出错: {exc}")
+
+        # 保持原有的返回顺序
+        results_map = {r.get("question_id"): r for r in results if r.get("question_id")}
+        ordered_results = []
+        for row in rows:
+            qid = row.get("question_id", "")
+            if qid in results_map:
+                ordered_results.append(results_map[qid])
 
         evaluation_time = time.time() - start_time
         overall_metrics = self._calculate_overall_metrics(results)
@@ -626,7 +655,6 @@ class RagasEvaluator:
             "overall_metrics": overall_metrics,
             "evaluation_metrics": evaluation_metrics,
         }
-        self.evaluation_history.append(out)
         logger.info(f"DeepEval评估完成，评估了{len(results)}个问题，耗时{evaluation_time:.2f}秒")
         return out
 
@@ -757,8 +785,9 @@ class RagasEvaluator:
             return "很差"
     
     def get_evaluation_history(self) -> List[Dict[str, Any]]:
-        """获取评估历史记录"""
-        return self.evaluation_history
+        """获取评估历史记录 (已废弃)"""
+        logger.warning("get_evaluation_history 方法已被废弃，评估结果应从数据库中读取。")
+        return []
     
     def export_results_to_dataframe(self, evaluation_result: Dict[str, Any]) -> pd.DataFrame:
         """将评估结果导出为DataFrame"""

@@ -18,10 +18,11 @@
           clearable
           style="width: 260px;"
         />
-        <el-select v-model="availabilityFilter" placeholder="可评估状态" clearable style="width: 160px;">
+        <el-select v-model="availabilityFilter" placeholder="评估状态" clearable style="width: 160px;">
           <el-option label="全部" value="" />
-          <el-option label="可评估" value="yes" />
-          <el-option label="不可评估" value="no" />
+          <el-option label="已评估" value="evaluated" />
+          <el-option label="可评估" value="evaluable" />
+          <el-option label="不可评估" value="not_evaluable" />
         </el-select>
       </div>
 
@@ -35,8 +36,14 @@
         </el-table-column>
         <el-table-column label="评估状态" width="120">
           <template #default="{ row }">
-            <el-tag :type="row.can_evaluate ? 'success' : 'warning'">
-              {{ row.can_evaluate ? '可评估' : '不可评估' }}
+            <el-tag v-if="row.eval_status === 'evaluated'" type="info">
+              已评估
+            </el-tag>
+            <el-tag v-else-if="row.eval_status === 'evaluable'" type="success">
+              可评估
+            </el-tag>
+            <el-tag v-else type="warning">
+              不可评估
             </el-tag>
           </template>
         </el-table-column>
@@ -185,10 +192,8 @@ const filteredTestsets = computed(() => {
   if (query) {
     result = result.filter(item => item.name.toLowerCase().includes(query))
   }
-  if (availabilityFilter.value === 'yes') {
-    result = result.filter(item => !!item.can_evaluate)
-  } else if (availabilityFilter.value === 'no') {
-    result = result.filter(item => !item.can_evaluate)
+  if (availabilityFilter.value) {
+    result = result.filter(item => item.eval_status === availabilityFilter.value)
   }
   return result
 })

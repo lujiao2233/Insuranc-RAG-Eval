@@ -155,6 +155,7 @@ class EvaluationResult(Base):
     generated_answer = Column(Text)
     context = Column(Text)
     metrics = Column(JSON)  # 各评估指标的分数
+    reasons = Column(JSON)  # 存储各指标对应的打分依据
     created_at = Column(DateTime, server_default=func.now())
     updated_at = Column(DateTime, onupdate=func.now())
 

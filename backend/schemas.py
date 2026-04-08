@@ -214,6 +214,7 @@ class EvaluationResultBase(BaseModel):
     generated_answer: Optional[str] = None
     context: Optional[str] = None
     metrics: Optional[Dict[str, float]] = None
+    reasons: Optional[Dict[str, str]] = None
 
 class EvaluationResultCreate(EvaluationResultBase):
     evaluation_id: uuid.UUID
@@ -221,6 +222,7 @@ class EvaluationResultCreate(EvaluationResultBase):
 
 class EvaluationResultUpdate(BaseModel):
     metrics: Optional[Dict[str, float]] = None
+    reasons: Optional[Dict[str, str]] = None
     generated_answer: Optional[str] = None
 
 class EvaluationResult(EvaluationResultBase):
