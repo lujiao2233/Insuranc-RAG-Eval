@@ -22,6 +22,7 @@ from services.question_generator import get_question_generator
 from services.task_manager import task_manager
 from services.config_service import ConfigService
 from services.advanced_testset_generator import QWEN_TAXONOMY_V1
+from services.api_client import TalkApiClient
 from utils.logger import get_logger
 
 logger = get_logger("testsets_router")
@@ -532,6 +533,14 @@ class GenerateQuestionsRequest(BaseModel):
     multi_doc_ratio: float = 0.1
     document_ids: Optional[List[UUID]] = None
     persona_list: Optional[List[Dict[str, Any]]] = None
+
+class SendCodeRequest(BaseModel):
+    mobile: str
+
+class ExecuteTestsetRequest(BaseModel):
+    mobile: str
+    verify_code: str
+    bot_id: str
 
 
 def _run_generation_task(
@@ -1215,3 +1224,158 @@ async def export_testset(
         "Content-Disposition": f"attachment; filename=\"{ascii_filename}\"; filename*=UTF-8''{encoded_filename}"
     }
     return StreamingResponse(iter([csv_content]), media_type="text/csv; charset=utf-8", headers=headers)
+
+@router.post("/{testset_id}/execution/send-code")
+async def send_execution_verify_code(
+    testset_id: UUID,
+    request: SendCodeRequest,
+    current_user: User = Depends(get_current_active_user),
+    db: Session = Depends(get_db)
+):
+    """发送测试集执行验证码"""
+    testset = db.query(TestSetModel).filter(
+        TestSetModel.id == str(testset_id),
+        TestSetModel.user_id == current_user.id
+    ).first()
+    
+    if not testset:
+        raise HTTPException(status_code=404, detail="测试集不存在")
+        
+    try:
+        # bot_id is not needed just for sending code, pass a dummy one
+        client = TalkApiClient(mobile=request.mobile, bot_id="dummy")
+        result = client.send_verify_code()
+        if result.get("code") not in (200, 0, "200", "0"):
+            raise HTTPException(status_code=400, detail=f"发送验证码失败: {result.get('message', '未知错误')}")
+        return {"message": "验证码发送成功"}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"发送验证码异常: {str(e)}")
+
+def _run_execution_task(
+    task_id: str,
+    testset_id: str,
+    user_id: str,
+    mobile: str,
+    verify_code: str,
+    bot_id: str
+):
+    """后台任务：执行测试集并获取回答"""
+    db = SessionLocal()
+    try:
+        task_manager.update_status(task_id, "running")
+        task_manager.append_log(task_id, f"正在初始化API客户端 (手机号: {mobile}, BOT_ID: {bot_id})...")
+        
+        testset = db.query(TestSetModel).filter(
+            TestSetModel.id == testset_id,
+            TestSetModel.user_id == user_id
+        ).first()
+        
+        if not testset:
+            task_manager.fail_task(task_id, "测试集不存在")
+            return
+            
+        client = TalkApiClient(mobile=mobile, bot_id=bot_id)
+        
+        try:
+            login_resp = client.phone_login(verify_code)
+            if not login_resp.get("success"):
+                task_manager.fail_task(task_id, f"登录失败: {login_resp}")
+                return
+            task_manager.append_log(task_id, "API客户端登录成功")
+        except Exception as e:
+            task_manager.fail_task(task_id, f"登录异常: {str(e)}")
+            return
+            
+        questions = db.query(Question).filter(Question.testset_id == testset_id).all()
+        if not questions:
+            task_manager.fail_task(task_id, "该测试集没有问题，无法执行")
+            return
+            
+        # 过滤出尚未回答的问题或者全部重新执行
+        questions_to_execute = [q for q in questions if not q.answer]
+        if not questions_to_execute:
+            task_manager.append_log(task_id, "所有问题均已回答，将重新执行获取答案")
+            questions_to_execute = questions
+            
+        total = len(questions_to_execute)
+        task_manager.append_log(task_id, f"开始处理，共 {total} 个问题...")
+        
+        for idx, q in enumerate(questions_to_execute):
+            try:
+                task_manager.update_progress(task_id, idx / total, f"正在处理第 {idx + 1}/{total} 题...")
+                task_manager.append_log(task_id, f"提问 [{idx + 1}/{total}]: {q.question}")
+                
+                answer, status, refs = client.chat_with_answer_with_status(
+                    q.question, listen_seconds=120.0, max_retries=1
+                )
+                
+                q.answer = answer
+                
+                if isinstance(q.question_metadata, dict):
+                    q.question_metadata["refs"] = refs
+                    q.question_metadata["status"] = status
+                    
+                db.commit()
+                task_manager.append_log(task_id, f"收到回答 [{idx + 1}/{total}] (状态: {status})")
+            except Exception as e:
+                task_manager.append_log(task_id, f"处理第 {idx + 1} 题时发生异常: {str(e)}")
+                # 记录异常但继续处理下一题
+                db.rollback()
+        
+        task_manager.update_progress(task_id, 1.0, "执行完成")
+        task_manager.finish_task(
+            task_id,
+            result={"processed_count": total},
+            message=f"测试集执行完成，共处理 {total} 个问题"
+        )
+        task_manager.append_log(task_id, "所有问题处理完毕")
+        
+    except Exception as e:
+        task_manager.fail_task(task_id, str(e))
+        task_manager.append_log(task_id, f"执行任务失败: {e}")
+    finally:
+        db.close()
+
+@router.post("/{testset_id}/execution/start")
+async def start_execution(
+    testset_id: UUID,
+    request: ExecuteTestsetRequest,
+    current_user: User = Depends(get_current_active_user),
+    db: Session = Depends(get_db)
+):
+    """启动测试集执行任务"""
+    testset = db.query(TestSetModel).filter(
+        TestSetModel.id == str(testset_id),
+        TestSetModel.user_id == current_user.id
+    ).first()
+    
+    if not testset:
+        raise HTTPException(status_code=404, detail="测试集不存在")
+        
+    task_id = task_manager.create_task(
+        task_type="execute_testset",
+        params={
+            "testset_id": str(testset_id),
+            "mobile": request.mobile,
+            "bot_id": request.bot_id
+        }
+    )
+    
+    thread = threading.Thread(
+        target=_run_execution_task,
+        args=(
+            task_id,
+            str(testset_id),
+            str(current_user.id),
+            request.mobile,
+            request.verify_code,
+            request.bot_id
+        ),
+        daemon=True
+    )
+    thread.start()
+    
+    return {
+        "task_id": task_id,
+        "message": "测试集执行任务已创建，请轮询状态"
+    }

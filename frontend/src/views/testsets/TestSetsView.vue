@@ -319,6 +319,85 @@
         </div>
       </template>
     </el-dialog>
+
+    <!-- 测试集执行对话框 -->
+    <el-dialog
+      v-model="showExecutionDialog"
+      title="执行测试集"
+      width="600px"
+      :close-on-click-modal="!executing"
+      :show-close="!executing"
+    >
+      <div v-if="!executing && !executionComplete && !executionFailed">
+        <el-form :model="executionForm" label-width="100px">
+          <el-form-item label="手机号" required>
+            <el-input v-model="executionForm.mobile" placeholder="请输入手机号" />
+          </el-form-item>
+          <el-form-item label="验证码" required>
+            <el-row :gutter="10" style="width: 100%">
+              <el-col :span="16">
+                <el-input v-model="executionForm.verifyCode" placeholder="请输入验证码" />
+              </el-col>
+              <el-col :span="8">
+                <el-button 
+                  type="primary" 
+                  :disabled="countdown > 0" 
+                  @click="handleSendVerifyCode"
+                  style="width: 100%"
+                >
+                  {{ countdown > 0 ? `${countdown}s 后重发` : '发送验证码' }}
+                </el-button>
+              </el-col>
+            </el-row>
+          </el-form-item>
+          <el-form-item label="BOT_ID" required>
+            <el-input v-model="executionForm.botId" placeholder="例如: 1018" />
+            <div class="form-help" style="font-size: 12px; color: #909399; margin-top: 4px; line-height: 1.4;">
+              说明: 1038 东吴宝典标签，1042 东吴宝典工作流，1018 东吴宝典，1043 问综合工作流
+            </div>
+          </el-form-item>
+        </el-form>
+      </div>
+
+      <!-- 执行进度显示 -->
+      <div v-if="executing || executionComplete || executionFailed" class="generation-progress">
+        <div class="progress-section">
+          <el-progress
+            :percentage="executionPercentage"
+            :status="executionProgressStatus"
+            :stroke-width="20"
+          />
+          <div class="progress-info">
+            <span>当前阶段: {{ executionInfo.stage }}</span>
+            <span>{{ executionInfo.current }}/{{ executionInfo.total }}</span>
+          </div>
+          <div v-if="executionInfo.logs.length > 0" class="progress-logs">
+            <div
+              v-for="(log, idx) in executionInfo.logs.slice(-8)"
+              :key="idx"
+              class="log-item"
+            >
+              {{ log }}
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <template #footer>
+        <div v-if="!executing && !executionComplete && !executionFailed">
+          <el-button @click="showExecutionDialog = false">取消</el-button>
+          <el-button type="primary" @click="handleStartExecution">
+            执行
+          </el-button>
+        </div>
+        <div v-if="executing">
+          <span>正在执行中，请稍候...</span>
+        </div>
+        <div v-if="executionComplete || executionFailed">
+          <el-button type="primary" @click="closeExecutionDialog">关闭</el-button>
+        </div>
+      </template>
+    </el-dialog>
   </div>
 </template>
 
@@ -353,6 +432,41 @@ const generationComplete = ref(false)
 const generationFailed = ref(false)
 const formRef = ref<FormInstance>()
 const createdTestsetId = ref<string | null>(null)
+
+// 执行测试集相关
+const showExecutionDialog = ref(false)
+const executing = ref(false)
+const executionComplete = ref(false)
+const executionFailed = ref(false)
+const currentExecuteTestsetId = ref<string | null>(null)
+const countdown = ref(0)
+let countdownTimer: number | null = null
+
+const executionForm = reactive({
+  mobile: '13141802889',
+  verifyCode: '',
+  botId: '1018'
+})
+
+const executionInfo = reactive({
+  stage: '准备中',
+  current: 0,
+  total: 0,
+  logs: [] as string[]
+})
+
+const executionPercentage = computed(() => {
+  if (executionInfo.total === 0) return 0
+  return Math.round((executionInfo.current / executionInfo.total) * 100)
+})
+
+const executionProgressStatus = computed(() => {
+  if (executing.value) return ''
+  if (executionFailed.value) return 'exception'
+  if (executionPercentage.value >= 100) return 'success'
+  if (executionPercentage.value > 0) return ''
+  return 'exception'
+})
 
 // 分类体系
 const taxonomy = ref<Array<{major: string, minors: string[]}>>([])
@@ -535,9 +649,146 @@ const viewTestset = (id: string) => {
   router.push(`/testsets/${id}`)
 }
 
-const runExecution = (_testset: TestSet) => {
-  ElMessage.info('功能待开发')
+const runExecution = (testset: TestSet) => {
+  currentExecuteTestsetId.value = testset.id
+  executionForm.verifyCode = ''
+  executing.value = false
+  executionComplete.value = false
+  executionFailed.value = false
+  executionInfo.stage = '准备中'
+  executionInfo.current = 0
+  executionInfo.total = 0
+  executionInfo.logs = []
+  showExecutionDialog.value = true
 }
+
+const handleSendVerifyCode = async () => {
+  if (!executionForm.mobile) {
+    ElMessage.warning('请输入手机号')
+    return
+  }
+  try {
+    await testsetApi.sendExecutionVerifyCode(currentExecuteTestsetId.value!, { mobile: executionForm.mobile })
+    ElMessage.success('验证码发送成功')
+    countdown.value = 60
+    countdownTimer = window.setInterval(() => {
+      countdown.value--
+      if (countdown.value <= 0 && countdownTimer) {
+        clearInterval(countdownTimer)
+      }
+    }, 1000)
+  } catch (error: any) {
+    ElMessage.error(error?.response?.data?.detail || '发送验证码失败')
+  }
+}
+
+const pollExecutionTaskStatus = async (taskId: string) => {
+  const pollInterval = 2000
+  let lastLogIndex = 0
+  
+  const poll = async () => {
+    if (!executing.value) return
+    
+    try {
+      const task = await testsetApi.getTaskStatus(taskId)
+      
+      executionInfo.stage = task.message || task.status
+      if (typeof task.progress === 'number' && executionInfo.total > 0) {
+        const currentByProgress = Math.round(task.progress * executionInfo.total)
+        if (currentByProgress > executionInfo.current) {
+          executionInfo.current = currentByProgress
+        }
+      }
+      
+      if (task.logs && task.logs.length > lastLogIndex) {
+        const newLogs = task.logs.slice(lastLogIndex)
+        for (const log of newLogs) {
+          executionInfo.logs.push(log)
+          // 尝试从日志中解析进度信息
+          const match = log.match(/处理第\s*(\d+)\/(\d+)\s*题/)
+          if (match) {
+            executionInfo.current = parseInt(match[1])
+            executionInfo.total = parseInt(match[2])
+          }
+        }
+        lastLogIndex = task.logs.length
+      }
+      
+      if (task.status === 'finished') {
+        executing.value = false
+        executionComplete.value = true
+        executionInfo.stage = '执行完成'
+        
+        if (task.result && task.result.processed_count) {
+          executionInfo.current = task.result.processed_count
+          executionInfo.total = task.result.processed_count
+        }
+        
+        ElMessage.success('测试集执行完成')
+        fetchTestsets()
+        
+      } else if (task.status === 'failed') {
+        executing.value = false
+        executionFailed.value = true
+        executionInfo.stage = '执行失败'
+        executionInfo.logs.push(`错误: ${task.error || '未知错误'}`)
+        ElMessage.error(task.error || '执行失败')
+        
+      } else {
+        setTimeout(poll, pollInterval)
+      }
+    } catch (error: any) {
+      console.error('轮询任务状态失败:', error)
+      setTimeout(poll, pollInterval)
+    }
+  }
+  
+  poll()
+}
+
+const handleStartExecution = async () => {
+  if (!executionForm.mobile || !executionForm.verifyCode || !executionForm.botId) {
+    ElMessage.warning('请填写完整信息')
+    return
+  }
+  
+  executing.value = true
+  executionComplete.value = false
+  executionFailed.value = false
+  executionInfo.stage = '准备中'
+  executionInfo.current = 0
+  executionInfo.total = 1 // will be updated from logs
+  executionInfo.logs = ['正在启动执行任务...']
+  
+  try {
+    const { task_id } = await testsetApi.startExecution(currentExecuteTestsetId.value!, {
+      mobile: executionForm.mobile,
+      verify_code: executionForm.verifyCode,
+      bot_id: executionForm.botId
+    })
+    
+    executionInfo.logs.push(`任务已创建: ${task_id}`)
+    pollExecutionTaskStatus(task_id)
+    
+  } catch (error: any) {
+    console.error('启动执行任务失败:', error)
+    executing.value = false
+    executionFailed.value = true
+    executionInfo.stage = '执行失败'
+    const errorMsg = error?.response?.data?.detail || error?.message || '未知错误'
+    executionInfo.logs.push(`错误: ${errorMsg}`)
+    ElMessage.error(errorMsg)
+  }
+}
+
+const closeExecutionDialog = () => {
+  showExecutionDialog.value = false
+  if (countdownTimer) {
+    clearInterval(countdownTimer)
+    countdown.value = 0
+  }
+}
+
 
 const handleDelete = async (testset: TestSet) => {
   try {
