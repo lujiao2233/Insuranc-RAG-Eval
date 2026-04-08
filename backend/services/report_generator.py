@@ -9,6 +9,7 @@ import io
 import base64
 from pathlib import Path
 import os
+import html
 
 from utils.logger import get_logger
 
@@ -437,11 +438,14 @@ class ReportGenerator:
                 metric_cn = METRIC_NAME_CN.get(metric, metric)
                 metrics_html += f"<span class='metric-badge {style_class}'>{metric_cn}: {score:.3f}</span>"
 
+            question_text = html.escape(str(result.get("question", "N/A")))
+            generated_answer = html.escape(str(result.get("generated_answer", "N/A")))
+
             html += f"""
             <div class="result-card">
-                <div class="result-question">问题 {i+1}: {result.get('question', 'N/A')}</div>
+                <div class="result-question">问题 {i+1}: {question_text}</div>
                 <div class="result-answer">
-                    <strong>生成答案:</strong> {result.get('generated_answer', 'N/A')}
+                    <strong>生成答案:</strong> {generated_answer}
                 </div>
                 <div class="metrics-scores">
                     {metrics_html}

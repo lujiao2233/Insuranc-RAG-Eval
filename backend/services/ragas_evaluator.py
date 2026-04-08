@@ -179,10 +179,18 @@ class RagasEvaluator:
             if run_config:
                 effective_config.update(run_config)
 
+            user_id = effective_config.get("user_id")
+            db_session = effective_config.get("db_session")
+            runtime_llm_config = self._configure_llm_environment(
+                user_id=str(user_id) if user_id else None,
+                db_session=db_session,
+                require_db_config=True,
+            )
+
             if "deepeval" in engine_normalized:
                 if DEEPEVAL_AVAILABLE:
                     return self._evaluate_with_deepeval_rows(
-                        rows, evaluation_metrics, start_time
+                        rows, evaluation_metrics, start_time, run_config=effective_config, llm_config=runtime_llm_config
                     )
                 else:
                     raise RuntimeError("DeepEval不可用，请确保已安装 deepeval 库并正确配置。")
@@ -260,18 +268,61 @@ class RagasEvaluator:
             out.append(row)
         return out
 
-    def _configure_llm_environment(self) -> None:
-        """配置LLM环境变量"""
-        api_key = (
-            os.getenv("DASHSCOPE_API_KEY")
-            or os.getenv("QWEN_API_KEY")
-            or os.getenv("OPENAI_API_KEY")
-        )
-        if api_key:
-            os.environ["OPENAI_API_KEY"] = api_key
-        base_url = os.getenv("OPENAI_BASE_URL") or "https://dashscope.aliyuncs.com/compatible-mode/v1"
-        if base_url:
-            os.environ["OPENAI_BASE_URL"] = base_url
+    def _configure_llm_environment(
+        self,
+        user_id: Optional[str] = None,
+        db_session=None,
+        require_db_config: bool = True,
+    ) -> Dict[str, str]:
+        """配置LLM环境变量（评估默认强制使用数据库配置，不回退环境变量）"""
+        if require_db_config and (not user_id or db_session is None):
+            raise RuntimeError("评估配置缺失：未提供用户上下文，无法从数据库读取Qwen配置")
+
+        api_key = ""
+        base_url = "https://dashscope.aliyuncs.com/compatible-mode/v1"
+        model = "qwen-plus"
+
+        if user_id and db_session is not None:
+            from services.config_service import ConfigService
+
+            config_service = ConfigService(db_session)
+            db_api_key = config_service.get_api_key(user_id, "qwen")
+            db_base_url = config_service.get_config_value(user_id, "qwen.api_endpoint", base_url)
+            db_eval_model = config_service.get_config_value(user_id, "qwen.evaluation_model", None)
+            db_gen_model = config_service.get_config_value(user_id, "qwen.generation_model", None)
+
+            if db_api_key:
+                api_key = str(db_api_key)
+            if db_base_url:
+                base_url = str(db_base_url)
+            if db_eval_model:
+                model = str(db_eval_model)
+            elif db_gen_model:
+                model = str(db_gen_model)
+
+        if require_db_config and not api_key:
+            raise RuntimeError("评估配置缺失：数据库未配置 qwen.api_key，请先在配置页面保存后重试")
+
+        if not api_key:
+            api_key = (
+                os.getenv("DASHSCOPE_API_KEY")
+                or os.getenv("QWEN_API_KEY")
+                or os.getenv("OPENAI_API_KEY")
+                or ""
+            )
+            base_url = os.getenv("OPENAI_BASE_URL") or base_url
+            model = os.getenv("QWEN_MODEL", model)
+
+        if not api_key:
+            raise RuntimeError("评估配置缺失：未找到可用API密钥")
+
+        os.environ["OPENAI_API_KEY"] = api_key
+        os.environ["QWEN_API_KEY"] = api_key
+        os.environ["DASHSCOPE_API_KEY"] = api_key
+        os.environ["OPENAI_BASE_URL"] = base_url
+        os.environ["QWEN_MODEL"] = model
+
+        return {"api_key": api_key, "base_url": base_url, "model": model}
 
     def _evaluate_with_ragas_rows(
         self,
@@ -284,7 +335,12 @@ class RagasEvaluator:
         if not RAGAS_AVAILABLE:
             raise RuntimeError("RAGAS评估依赖未安装，请安装 ragas 后重试")
 
-        self._configure_llm_environment()
+        cfg = run_config or {}
+        self._configure_llm_environment(
+            user_id=str(cfg.get("user_id")) if cfg.get("user_id") else None,
+            db_session=cfg.get("db_session"),
+            require_db_config=True,
+        )
 
         ragas_metrics = self._map_ragas_metrics(evaluation_metrics)
         if not ragas_metrics:
@@ -403,12 +459,18 @@ class RagasEvaluator:
         rows: List[Dict[str, Any]],
         evaluation_metrics: List[str],
         start_time: float,
+        run_config: Dict[str, Any] = None,
+        llm_config: Dict[str, str] = None,
     ) -> Dict[str, Any]:
         """使用DeepEval引擎执行评估"""
         if not DEEPEVAL_AVAILABLE:
             raise RuntimeError("DeepEval评估依赖未安装，请安装 deepeval 后重试")
-
-        self._configure_llm_environment()
+        cfg = run_config or {}
+        runtime_cfg = llm_config or self._configure_llm_environment(
+            user_id=str(cfg.get("user_id")) if cfg.get("user_id") else None,
+            db_session=cfg.get("db_session"),
+            require_db_config=True,
+        )
 
         from openai import OpenAI
         from deepeval.test_case import LLMTestCase
@@ -423,13 +485,13 @@ class RagasEvaluator:
         from deepeval.models import DeepEvalBaseLLM
 
         class QwenDeepEvalLLM(DeepEvalBaseLLM):
-            def __init__(self):
-                api_key = os.getenv("DASHSCOPE_API_KEY") or os.getenv("QWEN_API_KEY") or os.getenv("OPENAI_API_KEY")
+            def __init__(self, runtime: Dict[str, str]):
+                api_key = (runtime or {}).get("api_key") or os.getenv("DASHSCOPE_API_KEY") or os.getenv("QWEN_API_KEY") or os.getenv("OPENAI_API_KEY")
                 if not api_key:
                     raise RuntimeError("API密钥未配置")
                 self.api_key = api_key
-                self.base_url = os.getenv("OPENAI_BASE_URL") or "https://dashscope.aliyuncs.com/compatible-mode/v1"
-                self.model = os.getenv("QWEN_MODEL", "qwen-plus")
+                self.base_url = (runtime or {}).get("base_url") or os.getenv("OPENAI_BASE_URL") or "https://dashscope.aliyuncs.com/compatible-mode/v1"
+                self.model = (runtime or {}).get("model") or os.getenv("QWEN_MODEL", "qwen-plus")
                 self.temperature = 0.0
                 self.max_tokens = 2000
                 self.client = OpenAI(api_key=self.api_key, base_url=self.base_url)
@@ -483,7 +545,7 @@ class RagasEvaluator:
                     obj["reason"] = "No reason provided"
                 return json.dumps(obj, ensure_ascii=False)
 
-        qwen_llm = QwenDeepEvalLLM()
+        qwen_llm = QwenDeepEvalLLM(runtime_cfg)
 
         available_metrics: Dict[str, Any] = {
             "answer_relevance": AnswerRelevancyMetric,

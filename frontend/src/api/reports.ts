@@ -2,12 +2,17 @@ import { request } from './index'
 import type { PaginatedResponse } from '@/types'
 
 export interface Report {
-  id: string
   evaluation_id: string
   testset_name?: string
-  status: string
-  created_at: string
-  report_path?: string
+  evaluation_method?: string
+  status?: string
+  total_questions?: number
+  evaluated_questions?: number
+  evaluation_time?: number
+  created_at?: string
+  timestamp?: string
+  overall_score?: number
+  performance_level?: string
 }
 
 export const reportApi = {
@@ -25,7 +30,8 @@ export const reportApi = {
     performance_level: string
     total_questions: number
     evaluated_questions: number
-    metrics: Record<string, any>
+    evaluation_time: number
+    key_findings: string[]
     recommendations: string[]
   }> {
     return request.get(`/reports/${evaluationId}/summary`)
@@ -33,6 +39,9 @@ export const reportApi = {
 
   getReportMetrics(evaluationId: string): Promise<{
     evaluation_id: string
+    quality_metrics: Record<string, any>
+    safety_metrics: Record<string, any>
+    overall_score: Record<string, any>
     metrics: Record<string, any>
   }> {
     return request.get(`/reports/${evaluationId}/metrics`)
@@ -48,13 +57,5 @@ export const reportApi = {
 
   downloadReport(evaluationId: string, format: 'pdf' | 'html' = 'pdf'): Promise<Blob> {
     return request.get(`/reports/${evaluationId}/download?format=${format}`, {}, { responseType: 'blob' })
-  },
-
-  compareReports(evaluationId1: string, evaluationId2: string): Promise<{
-    evaluation_1: Record<string, any>
-    evaluation_2: Record<string, any>
-    comparison: Record<string, any>
-  }> {
-    return request.get(`/reports/${evaluationId1}/compare/${evaluationId2}`)
   }
 }

@@ -66,37 +66,11 @@
                 <el-icon><Download /></el-icon>
                 下载PDF
               </el-button>
-              <el-button type="warning" @click="showCompareDialog = true">
-                <el-icon><Sort /></el-icon>
-                对比报告
-              </el-button>
             </div>
           </el-card>
         </el-col>
       </el-row>
     </template>
-    
-    <el-dialog
-      v-model="showCompareDialog"
-      title="选择对比报告"
-      width="400px"
-    >
-      <el-select v-model="compareId" placeholder="选择要对比的报告" style="width: 100%">
-        <el-option
-          v-for="report in otherReports"
-          :key="report.evaluation_id"
-          :label="report.evaluation_id.substring(0, 8)"
-          :value="report.evaluation_id"
-        />
-      </el-select>
-      
-      <template #footer>
-        <el-button @click="showCompareDialog = false">取消</el-button>
-        <el-button type="primary" @click="compareReports" :disabled="!compareId">
-          对比
-        </el-button>
-      </template>
-    </el-dialog>
   </div>
 </template>
 
@@ -104,10 +78,9 @@
 import { ref, onMounted, nextTick, onUnmounted } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { ElMessage } from 'element-plus'
-import { Download, Sort } from '@element-plus/icons-vue'
+import { Download } from '@element-plus/icons-vue'
 import * as echarts from 'echarts'
-import { reportApi, type Report } from '@/api/reports'
-import type { FormInstance } from 'element-plus'
+import { reportApi } from '@/api/reports'
 
 const route = useRoute()
 const router = useRouter()
@@ -116,10 +89,7 @@ const loading = ref(false)
 const evaluationId = ref('')
 const summary = ref<any>(null)
 const metrics = ref<Record<string, any>>({})
-const otherReports = ref<Report[]>([])
 const chartRef = ref<HTMLElement>()
-const showCompareDialog = ref(false)
-const compareId = ref('')
 let chartInstance: echarts.ECharts | null = null
 
 const getScoreType = (score: number | null) => {
@@ -140,7 +110,11 @@ const fetchReport = async () => {
     ])
     
     summary.value = summaryRes
-    metrics.value = metricsRes.metrics
+    metrics.value = {
+      ...(metricsRes.quality_metrics || {}),
+      ...(metricsRes.safety_metrics || {}),
+      ...(metricsRes.overall_score ? { overall_score: metricsRes.overall_score } : {})
+    }
     
     await nextTick()
     initChart()
@@ -149,17 +123,6 @@ const fetchReport = async () => {
     router.back()
   } finally {
     loading.value = false
-  }
-}
-
-const fetchOtherReports = async () => {
-  try {
-    const response = await reportApi.getReports()
-    otherReports.value = response.items.filter(
-      (r: Report) => r.evaluation_id !== evaluationId.value
-    )
-  } catch (error) {
-    console.error('Failed to fetch other reports:', error)
   }
 }
 
@@ -219,14 +182,8 @@ const downloadReport = async (format: 'pdf' | 'html') => {
   }
 }
 
-const compareReports = () => {
-  if (!compareId.value) return
-  router.push(`/reports/${evaluationId.value}/compare/${compareId.value}`)
-}
-
 onMounted(() => {
   fetchReport()
-  fetchOtherReports()
 })
 
 onUnmounted(() => {

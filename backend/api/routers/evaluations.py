@@ -82,7 +82,9 @@ def run_evaluation_task(
         
         run_config = {
             "timeout": 300,
-            "max_workers": 4
+            "max_workers": 4,
+            "user_id": str(evaluation.user_id) if getattr(evaluation, "user_id", None) else None,
+            "db_session": db,
         }
         
         result = evaluator.evaluate(

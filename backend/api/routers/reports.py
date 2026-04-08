@@ -41,9 +41,11 @@ async def list_reports(
             "evaluation_id": e.id,
             "testset_name": testset.name if testset else "未知测试集",
             "evaluation_method": e.evaluation_method,
+            "status": e.status,
             "total_questions": e.total_questions,
             "evaluated_questions": e.evaluated_questions,
             "evaluation_time": e.evaluation_time,
+            "created_at": e.timestamp.isoformat() if e.timestamp else None,
             "timestamp": e.timestamp.isoformat() if e.timestamp else None,
             "overall_score": e.overall_metrics.get("overall_score", {}).get("mean", 0) if e.overall_metrics else 0,
             "performance_level": e.overall_metrics.get("overall_score", {}).get("interpretation", "未知") if e.overall_metrics else "未知"
@@ -71,6 +73,9 @@ async def get_report_detail(
     
     if not evaluation:
         raise HTTPException(status_code=404, detail="评估报告不存在")
+
+    if evaluation.status != "completed":
+        raise HTTPException(status_code=400, detail="评估尚未完成，无法下载报告")
     
     testset = db.query(TestSet).filter(TestSet.id == evaluation.testset_id).first()
     
@@ -301,83 +306,17 @@ async def get_evaluation_metrics(
             else:
                 quality_metrics[metric] = data
     
+    flat_metrics = {}
+    for metric, data in overall_metrics.items():
+        if metric == "overall_score":
+            continue
+        if isinstance(data, dict) and "mean" in data:
+            flat_metrics[metric] = data.get("mean", 0)
+
     return {
         "evaluation_id": str(evaluation_id),
+        "metrics": flat_metrics,
         "quality_metrics": quality_metrics,
         "safety_metrics": safety_metrics,
         "overall_score": overall_metrics.get("overall_score", {})
     }
-
-
-@router.get("/{evaluation_id}/compare/{other_evaluation_id}")
-async def compare_reports(
-    evaluation_id: UUID,
-    other_evaluation_id: UUID,
-    current_user: User = Depends(get_current_active_user),
-    db: Session = Depends(get_db)
-):
-    """比较两个评估报告"""
-    evaluations = []
-    
-    for eval_id in [evaluation_id, other_evaluation_id]:
-        evaluation = db.query(EvaluationModel).filter(
-            EvaluationModel.id == str(eval_id),
-            EvaluationModel.user_id == current_user.id
-        ).first()
-        
-        if not evaluation:
-            raise HTTPException(status_code=404, detail=f"评估报告 {eval_id} 不存在")
-        
-        testset = db.query(TestSet).filter(TestSet.id == evaluation.testset_id).first()
-        
-        evaluations.append({
-            "evaluation_id": evaluation.id,
-            "testset_name": testset.name if testset else "未知测试集",
-            "evaluation_method": evaluation.evaluation_method,
-            "total_questions": evaluation.total_questions,
-            "evaluated_questions": evaluation.evaluated_questions,
-            "evaluation_time": evaluation.evaluation_time,
-            "timestamp": evaluation.timestamp.isoformat() if evaluation.timestamp else None,
-            "overall_metrics": evaluation.overall_metrics or {}
-        })
-    
-    comparison = {
-        "evaluations": evaluations,
-        "metrics_comparison": {},
-        "improvement": {}
-    }
-    
-    metrics_1 = evaluations[0].get("overall_metrics", {})
-    metrics_2 = evaluations[1].get("overall_metrics", {})
-    
-    all_metrics = set(metrics_1.keys()) | set(metrics_2.keys())
-    
-    for metric in all_metrics:
-        if metric == "overall_score":
-            continue
-        
-        data_1 = metrics_1.get(metric, {})
-        data_2 = metrics_2.get(metric, {})
-        
-        if isinstance(data_1, dict) and "mean" in data_1 and isinstance(data_2, dict) and "mean" in data_2:
-            mean_1 = data_1.get("mean", 0)
-            mean_2 = data_2.get("mean", 0)
-            
-            comparison["metrics_comparison"][metric] = {
-                "evaluation_1": mean_1,
-                "evaluation_2": mean_2,
-                "difference": mean_2 - mean_1,
-                "improved": mean_2 > mean_1
-            }
-    
-    if "overall_score" in metrics_1 and "overall_score" in metrics_2:
-        score_1 = metrics_1["overall_score"].get("mean", 0)
-        score_2 = metrics_2["overall_score"].get("mean", 0)
-        
-        comparison["improvement"] = {
-            "overall_score_difference": score_2 - score_1,
-            "improved": score_2 > score_1,
-            "improvement_percentage": ((score_2 - score_1) / score_1 * 100) if score_1 > 0 else 0
-        }
-    
-    return comparison

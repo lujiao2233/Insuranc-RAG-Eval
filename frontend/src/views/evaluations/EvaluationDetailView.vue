@@ -208,16 +208,21 @@ const startPolling = async () => {
   
   const poll = async () => {
     try {
-      const status = await evaluationApi.getTaskStatus(evaluation.value!.id)
-      taskProgress.value = status.progress || 0
-      taskEvaluated.value = status.evaluated_questions || 0
-      
-      if (status.status === 'completed') {
+      const latest = await evaluationApi.getEvaluation(evaluation.value!.id)
+      evaluation.value = latest
+      taskEvaluated.value = latest.evaluated_questions || 0
+      taskProgress.value = latest.total_questions
+        ? Math.min(100, Math.round((taskEvaluated.value / latest.total_questions) * 100))
+        : 0
+
+      if (latest.status === 'completed') {
         stopPolling()
-        await fetchEvaluation()
-      } else if (status.status === 'failed') {
+        await fetchResults()
+        await nextTick()
+        initChart()
+      } else if (latest.status === 'failed') {
         stopPolling()
-        ElMessage.error('评估失败')
+        ElMessage.error(latest.error_message || '评估失败')
       }
     } catch (error) {
       console.error('Polling error:', error)
