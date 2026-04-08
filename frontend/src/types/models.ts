@@ -38,6 +38,7 @@ export interface TestSet {
   question_count: number
   answered_questions?: number
   can_evaluate?: boolean
+  eval_status?: 'evaluated' | 'evaluable' | 'not_evaluable'
   question_types?: Record<string, number>
   generation_method: string
   file_path?: string

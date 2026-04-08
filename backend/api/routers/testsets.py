@@ -17,7 +17,7 @@ from datetime import datetime
 from api.dependencies import get_current_user, get_current_active_user
 from config.database import get_db, SessionLocal
 from schemas import TestSetCreate, TestSetUpdate
-from models.database import User, TestSet as TestSetModel, Document, Question
+from models.database import User, TestSet as TestSetModel, Document, Question, Evaluation as EvaluationModel, EvaluationResult as EvaluationResultModel
 from services.question_generator import get_question_generator
 from services.task_manager import task_manager
 from services.config_service import ConfigService
@@ -158,6 +158,19 @@ async def list_testsets(
         total_questions = t.question_count or 0
         can_evaluate = total_questions > 0 and answered_questions >= total_questions
 
+        latest_eval = db.query(EvaluationModel).filter(
+            EvaluationModel.testset_id == str(t.id),
+            EvaluationModel.status == 'completed'
+        ).order_by(EvaluationModel.timestamp.desc()).first()
+
+        is_evaluated = latest_eval is not None
+        if is_evaluated:
+            eval_status = "evaluated"
+        elif can_evaluate:
+            eval_status = "evaluable"
+        else:
+            eval_status = "not_evaluable"
+
         items.append({
             "id": t.id,
             "document_id": t.document_id,
@@ -166,6 +179,7 @@ async def list_testsets(
             "question_count": total_questions,
             "answered_questions": answered_questions,
             "can_evaluate": can_evaluate,
+            "eval_status": eval_status,
             "question_types": t.question_types,
             "generation_method": t.generation_method,
             "create_time": t.create_time.isoformat() if t.create_time else None,
@@ -1080,9 +1094,26 @@ async def export_testset(
         docs = db.query(Document).filter(Document.id.in_(list(doc_ids_in_meta))).all()
         document_name_map = {str(d.id): (d.filename or "") for d in docs}
     
+    latest_eval = db.query(EvaluationModel).filter(
+        EvaluationModel.testset_id == str(testset_id),
+        EvaluationModel.status == 'completed'
+    ).order_by(EvaluationModel.timestamp.desc()).first()
+
+    base_headers = ["问题ID", "问题", "问题类型", "参考答案", "模型答案", "切片内容", "来源文档", "角色画像"]
+    metrics_headers = []
+    eval_results_map = {}
+    
+    if latest_eval:
+        metrics_headers = latest_eval.evaluation_metrics or []
+        results = db.query(EvaluationResultModel).filter(
+            EvaluationResultModel.evaluation_id == latest_eval.id
+        ).all()
+        for r in results:
+            eval_results_map[r.question_id] = r
+
     output = io.StringIO()
     writer = csv.writer(output)
-    writer.writerow(["问题ID", "问题", "问题类型", "参考答案", "模型答案", "切片内容", "来源文档", "角色画像"])
+    writer.writerow(base_headers + metrics_headers)
     for q in questions:
         normalized_type, normalized_major, normalized_minor = _normalize_question_category(
             q.question_type, q.category_major, q.category_minor
@@ -1133,20 +1164,41 @@ async def export_testset(
         elif persona_description:
             persona_profile = persona_description
 
-        writer.writerow([
+        row_data = [
             q.id,
             q.question or "",
             unified_question_type,
             q.expected_answer or "",
-            "",
-            q.context or ""
-            ,
+            q.answer or "",
+            q.context or "",
             source_document,
             persona_profile
-        ])
+        ]
+
+        if latest_eval:
+            r = eval_results_map.get(str(q.id))
+            metrics_dict = r.metrics if r and isinstance(r.metrics, dict) else {}
+            for m in metrics_headers:
+                val = metrics_dict.get(m, "")
+                row_data.append(str(val) if val is not None else "")
+
+        writer.writerow(row_data)
+
     csv_content = output.getvalue()
     output.close()
-    filename = f"{(testset.name or 'testset').replace(' ', '_')}.csv"
+
+    if latest_eval:
+        method_raw = latest_eval.evaluation_method or ""
+        if "ragas" in method_raw.lower():
+            method_name = "Ragas"
+        elif "deepeval" in method_raw.lower():
+            method_name = "DeepEval"
+        else:
+            method_name = method_raw
+        filename = f"{(testset.name or 'testset').replace(' ', '_')}({method_name}).csv"
+    else:
+        filename = f"{(testset.name or 'testset').replace(' ', '_')}.csv"
+        
     ascii_filename = "".join(ch if ord(ch) < 128 else "_" for ch in filename)
     encoded_filename = quote(filename)
     headers = {
