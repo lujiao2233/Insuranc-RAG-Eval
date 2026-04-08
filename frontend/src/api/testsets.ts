@@ -124,5 +124,13 @@ export const testsetApi = {
     return request.post('/testsets/import', formData, {
       headers: { 'Content-Type': 'multipart/form-data' }
     })
+  },
+
+  sendExecutionVerifyCode(testsetId: string, data: { mobile: string }) {
+    return request.post(`/api/testsets/${testsetId}/execution/send-code`, data)
+  },
+
+  startExecution(testsetId: string, data: { mobile: string; verify_code: string; bot_id: string }) {
+    return request.post<{ task_id: string; message: string }>(`/api/testsets/${testsetId}/execution/start`, data)
   }
 }

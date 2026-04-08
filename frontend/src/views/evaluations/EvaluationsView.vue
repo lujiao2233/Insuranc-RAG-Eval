@@ -202,7 +202,7 @@ const fetchTestsets = async () => {
   loading.value = true
   try {
     const response = await testsetApi.getTestSets({ limit: 1000 })
-    testsets.value = response.items.filter(item => isUploadedTestset(item))
+    testsets.value = response.items.filter(item => isUploadedTestset(item) || item.can_evaluate)
   } catch (error) {
     ElMessage.error('获取测试集列表失败')
   } finally {
