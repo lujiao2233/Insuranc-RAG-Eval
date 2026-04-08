@@ -61,6 +61,22 @@
               <span>评估结果</span>
             </template>
             <el-table :data="results" style="width: 100%">
+              <el-table-column type="expand">
+                <template #default="{ row }">
+                  <div style="padding: 20px; background-color: #fafafa;">
+                    <h4>打分依据 (Reasoning)</h4>
+                    <div v-if="row.reasons && Object.keys(row.reasons).length > 0">
+                      <div v-for="(reason, metricName) in row.reasons" :key="metricName" style="margin-bottom: 10px;">
+                        <el-tag size="small" type="info" style="margin-bottom: 4px;">{{ metricName }}</el-tag>
+                        <p style="margin: 0; color: #606266; font-size: 14px; line-height: 1.5;">{{ reason }}</p>
+                      </div>
+                    </div>
+                    <div v-else>
+                      <el-empty description="暂无打分依据" :image-size="60" />
+                    </div>
+                  </div>
+                </template>
+              </el-table-column>
               <el-table-column prop="question_text" label="问题" min-width="200">
                 <template #default="{ row }">
                   <el-text truncated>{{ row.question_text }}</el-text>

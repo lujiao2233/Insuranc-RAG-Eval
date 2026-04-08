@@ -115,7 +115,8 @@ def run_evaluation_task(
                 expected_answer=individual_result.get("expected_answer", ""),
                 generated_answer=individual_result.get("generated_answer", ""),
                 context=individual_result.get("context", ""),
-                metrics=individual_result.get("metrics", {})
+                metrics=individual_result.get("metrics", {}),
+                reasons=individual_result.get("reasons", {})
             )
             eval_results_to_add.append(eval_result)
             
@@ -324,7 +325,8 @@ async def get_evaluation_results(
                 "expected_answer": r.expected_answer,
                 "generated_answer": r.generated_answer,
                 "context": r.context,
-                "metrics": r.metrics
+                "metrics": r.metrics,
+                "reasons": r.reasons
             }
             for r in results
         ]

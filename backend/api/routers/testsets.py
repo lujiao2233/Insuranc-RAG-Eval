@@ -1101,10 +1101,14 @@ async def export_testset(
 
     base_headers = ["问题ID", "问题", "问题类型", "参考答案", "模型答案", "切片内容", "来源文档", "角色画像"]
     metrics_headers = []
+    reason_headers = []
     eval_results_map = {}
     
     if latest_eval:
         metrics_headers = latest_eval.evaluation_metrics or []
+        for m in metrics_headers:
+            reason_headers.append(f"{m}_reason")
+        
         results = db.query(EvaluationResultModel).filter(
             EvaluationResultModel.evaluation_id == latest_eval.id
         ).all()
@@ -1113,7 +1117,7 @@ async def export_testset(
 
     output = io.StringIO()
     writer = csv.writer(output)
-    writer.writerow(base_headers + metrics_headers)
+    writer.writerow(base_headers + metrics_headers + reason_headers)
     for q in questions:
         normalized_type, normalized_major, normalized_minor = _normalize_question_category(
             q.question_type, q.category_major, q.category_minor
@@ -1178,9 +1182,15 @@ async def export_testset(
         if latest_eval:
             r = eval_results_map.get(str(q.id))
             metrics_dict = r.metrics if r and isinstance(r.metrics, dict) else {}
+            reasons_dict = r.reasons if r and isinstance(r.reasons, dict) else {}
+            
             for m in metrics_headers:
                 val = metrics_dict.get(m, "")
                 row_data.append(str(val) if val is not None else "")
+                
+            for m in metrics_headers:
+                reason_val = reasons_dict.get(m, "")
+                row_data.append(str(reason_val) if reason_val is not None else "")
 
         writer.writerow(row_data)
 

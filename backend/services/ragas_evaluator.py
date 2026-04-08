@@ -581,14 +581,17 @@ class RagasEvaluator:
             )
             
             metrics_out: Dict[str, float] = {}
+            reasons_out: Dict[str, str] = {}
             for metric_name, metric_cls in metric_classes.items():
                 try:
-                    metric = metric_cls(model=qwen_llm)
+                    # 注入 include_reason=True 强制要求 LLM 输出评估理由
+                    metric = metric_cls(model=qwen_llm, include_reason=True)
                 except TypeError:
-                    metric = metric_cls()
+                    metric = metric_cls(model=qwen_llm)
                 try:
                     metric.measure(test_case)
                     score_value = float(getattr(metric, "score", 0.0))
+                    reason_value = getattr(metric, "reason", None)
                 except Exception as e:
                     error_msg = str(e).lower()
                     # 对于严重错误（如网络断开、鉴权失败、限流等），直接向外抛出异常中断评估
@@ -596,7 +599,11 @@ class RagasEvaluator:
                         raise RuntimeError(f"大模型接口调用发生严重错误: {e}")
                     logger.warning(f"DeepEval metric {metric_name} 计算失败: {e}")
                     score_value = 0.0
+                    reason_value = f"评估失败: {str(e)}"
+                
                 metrics_out[metric_name] = score_value
+                if reason_value:
+                    reasons_out[metric_name] = str(reason_value)
 
             context_value = row.get("contexts", [])
             if isinstance(context_value, list):
@@ -611,6 +618,7 @@ class RagasEvaluator:
                 "generated_answer": row.get("answer", ""),
                 "context": context_str,
                 "metrics": metrics_out,
+                "reasons": reasons_out,
                 "evaluation_time": time.time() - start_time,
             }
 
