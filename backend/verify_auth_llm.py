@@ -193,7 +193,8 @@ def check_chunking_service():
         
         print("  测试简单切片...")
         text = "这是第一行。\n" * 50
-        chunks = chunker._simple_chunk(text, 100, {})
+        # verify_auth_llm.py is a sync script, but chunk_document is async, we use chunk_by_semantic for sync test
+        chunks = chunker.chunk_by_semantic(text, 100, 200)
         assert len(chunks) > 0, "切片失败"
         print(f"  ✓ 简单切片正常，生成 {len(chunks)} 个切片")
         

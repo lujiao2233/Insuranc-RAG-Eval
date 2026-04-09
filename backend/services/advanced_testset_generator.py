@@ -249,10 +249,20 @@ def _infer_knowledge_type_from_text(text: str) -> str:
 
 
 def _mapped_types_from_knowledge_type(value: Any, text: str = "") -> List[Dict[str, Any]]:
-    kt = _normalize_knowledge_type(value)
-    if not kt:
-        kt = _infer_knowledge_type_from_text(text)
-    return list(KNOWLEDGE_TYPE_TO_QUESTION_TYPE.get(kt, KNOWLEDGE_TYPE_TO_QUESTION_TYPE["事实陈述"]))
+    # 兼容多标签列表与字符串
+    if isinstance(value, list):
+        text_to_parse = "、".join(str(x) for x in value)
+    else:
+        text_to_parse = str(value or "")
+        
+    kts = _normalize_knowledge_types(text_to_parse)
+    if not kts:
+        kts = [_infer_knowledge_type_from_text(text)]
+        
+    # 根据用户要求，从标签列表中随机选择一个标签进行映射
+    selected_kt = random.choice(kts)
+    
+    return list(KNOWLEDGE_TYPE_TO_QUESTION_TYPE.get(selected_kt, KNOWLEDGE_TYPE_TO_QUESTION_TYPE["事实陈述"]))
 
 
 def _has_numeric_question_intent(question: str) -> bool:
@@ -740,7 +750,13 @@ def _build_persona_outline_from_chunk(chunk: Dict[str, Any]) -> List[Dict[str, A
     meta = chunk.get("chunk_metadata") or chunk.get("metadata") or {}
     title = str(meta.get("section_title") or "").strip()
     summary = str(meta.get("section_summary") or "").strip()
-    knowledge_type = str(meta.get("knowledge_type") or "").strip()
+    
+    kt_raw = meta.get("knowledge_type")
+    if isinstance(kt_raw, list):
+        knowledge_type = "、".join(str(k).strip() for k in kt_raw if str(k).strip())
+    else:
+        knowledge_type = str(kt_raw or "").strip()
+        
     key_terms = meta.get("key_terms")
     terms: List[str] = []
     if isinstance(key_terms, list):
@@ -1979,7 +1995,7 @@ class AdvancedTestsetGenerator:
                 terms = terms[:8]
                 product_name = chunk_meta.get("product_name") or ""
                 doc_type = chunk_meta.get("doc_type") or ""
-                knowledge_type = chunk_meta.get("knowledge_type") or ""
+                knowledge_type = _format_knowledge_type(chunk_meta.get("knowledge_type"))
                 section_title = chunk_meta.get("section_title") or ""
                 purpose_summary = chunk_meta.get("purpose_summary") or ""
                 ctx = (
