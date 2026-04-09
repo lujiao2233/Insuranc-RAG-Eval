@@ -261,7 +261,14 @@ class TableDataStrategy(GeneralChunkingStrategy):
             if table_result is not None:
                 return table_result
             
-        if section_meta.get("knowledge_type") == "数据数值" or section_meta.get("doc_type") in ["费率表", "现金价值表"]:
+        kt_meta = section_meta.get("knowledge_type")
+        is_numeric = False
+        if isinstance(kt_meta, list):
+            is_numeric = "数据数值" in kt_meta
+        else:
+            is_numeric = kt_meta == "数据数值"
+
+        if is_numeric or section_meta.get("doc_type") in ["费率表", "现金价值表"]:
             if self.llm and len(text) < 4000:
                 logger.info("正则解析表格失败，尝试使用 LLM 结构化提取")
                 return await self._chunk_table_with_llm(text)
