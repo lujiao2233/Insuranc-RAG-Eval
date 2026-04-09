@@ -2,7 +2,7 @@ import { request } from './index'
 import type { TestSet, Question, PaginatedResponse } from '@/types'
 
 export const testsetApi = {
-  getTestSets(params?: { skip?: number; limit?: number }): Promise<PaginatedResponse<TestSet>> {
+  getTestSets(params?: { skip?: number; limit?: number; document_id?: string }): Promise<PaginatedResponse<TestSet>> {
     return request.get('/testsets/', params)
   },
 

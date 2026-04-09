@@ -97,20 +97,6 @@
                 </template>
               </el-input>
               
-              <el-select 
-                v-model="chunkQuery.entity_type" 
-                placeholder="按产品筛选" 
-                clearable 
-                class="ml-4"
-                @change="fetchChunks"
-              >
-                <el-option 
-                  v-for="entity in document.product_entities" 
-                  :key="entity" 
-                  :label="entity" 
-                  :value="entity" 
-                />
-              </el-select>
             </div>
 
             <el-table 
@@ -421,10 +407,10 @@ const fetchTestsets = async () => {
   if (!document.value) return
   
   try {
-    const response = await testsetApi.getTestSets()
-    testsets.value = response.items.filter(
-      (t: TestSet) => t.document_id === document.value?.id
-    )
+    const response = await testsetApi.getTestSets({
+      document_id: document.value.id
+    })
+    testsets.value = response.items
   } catch (error) {
     console.error('Failed to fetch testsets:', error)
   }
@@ -445,12 +431,12 @@ const handleDownload = async () => {
       return
     }
     const url = window.URL.createObjectURL(blob)
-    const a = document.createElement('a')
+    const a = window.document.createElement('a')
     a.href = url
     a.download = document.value.filename
-    document.body.appendChild(a)
+    window.document.body.appendChild(a)
     a.click()
-    document.body.removeChild(a)
+    window.document.body.removeChild(a)
     // 延迟释放，避免浏览器尚未开始下载时 URL 被过早回收
     setTimeout(() => window.URL.revokeObjectURL(url), 1000)
   } catch (error: any) {
@@ -498,7 +484,6 @@ onUnmounted(() => {
 
 onMounted(async () => {
   await fetchDocument()
-  await fetchTestsets()
 })
 </script>
 
@@ -507,11 +492,25 @@ onMounted(async () => {
   .action-buttons {
     display: flex;
     flex-direction: column;
+    align-items: stretch;
     gap: 12px;
     
     .el-button {
       width: 100%;
       justify-content: flex-start;
+      text-align: left;
+    }
+
+    .el-button + .el-button {
+      margin-left: 0;
+    }
+
+    .el-button :deep(.el-icon) {
+      width: 16px;
+      min-width: 16px;
+      margin-right: 8px;
+      display: inline-flex;
+      justify-content: center;
     }
   }
   

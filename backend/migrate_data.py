@@ -1,11 +1,26 @@
+import os
 import pymysql
 
 # 本地数据库连接
-local_conn = pymysql.connect(host='localhost', port=3306, user='root', password='password', database='rag_evaluation', charset='utf8mb4')
+local_conn = pymysql.connect(
+    host=os.getenv('LOCAL_MYSQL_HOST', 'localhost'),
+    port=int(os.getenv('LOCAL_MYSQL_PORT', '3306')),
+    user=os.getenv('LOCAL_MYSQL_USER', 'root'),
+    password=os.getenv('LOCAL_MYSQL_PASSWORD', ''),
+    database=os.getenv('LOCAL_MYSQL_DATABASE', 'rag_evaluation'),
+    charset='utf8mb4'
+)
 local_cursor = local_conn.cursor()
 
 # 内网数据库连接
-remote_conn = pymysql.connect(host='10.1.219.22', port=3306, user='root', password='dwcsrag123', database='RAGEVAL', charset='utf8mb4')
+remote_conn = pymysql.connect(
+    host=os.getenv('REMOTE_MYSQL_HOST', 'localhost'),
+    port=int(os.getenv('REMOTE_MYSQL_PORT', '3306')),
+    user=os.getenv('REMOTE_MYSQL_USER', 'root'),
+    password=os.getenv('REMOTE_MYSQL_PASSWORD', ''),
+    database=os.getenv('REMOTE_MYSQL_DATABASE', 'RAGEVAL'),
+    charset='utf8mb4'
+)
 remote_cursor = remote_conn.cursor()
 
 tables = ['users', 'documents', 'document_chunks', 'testsets', 'questions', 'evaluations', 'evaluation_results', 'configurations']

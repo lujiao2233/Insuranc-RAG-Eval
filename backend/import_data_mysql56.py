@@ -1,7 +1,15 @@
+import os
 import pymysql
 import re
 
-conn = pymysql.connect(host='10.1.219.22', port=3306, user='root', password='dwcsrag123', database='RAGEVAL', charset='utf8mb4')
+conn = pymysql.connect(
+    host=os.getenv('MYSQL_HOST', 'localhost'),
+    port=int(os.getenv('MYSQL_PORT', '3306')),
+    user=os.getenv('MYSQL_USER', 'root'),
+    password=os.getenv('MYSQL_PASSWORD', ''),
+    database=os.getenv('MYSQL_DATABASE', 'RAGEVAL'),
+    charset='utf8mb4'
+)
 cursor = conn.cursor()
 
 print('开始导入数据...')

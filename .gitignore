@@ -62,4 +62,12 @@ Thumbs.db
 
 # Data files (uploads, reports)
 /backend/data/uploads/
-/backend/data/reports/backend/.deepeval/.deepeval_telemetry.txt
+/backend/data/reports/
+/backend/.deepeval/
+/backend/token_cache.json
+
+# Frontend local/build cache
+/frontend/tsconfig.tsbuildinfo
+
+# IDE/Agent local files
+/.trae/
