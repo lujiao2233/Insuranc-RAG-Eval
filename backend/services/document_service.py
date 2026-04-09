@@ -28,6 +28,17 @@ class DocumentService:
         self.document_processor = DocumentProcessor()
         self.metadata_extractor = MetadataExtractor()
         self.chunking_service = ChunkingService()
+
+    @staticmethod
+    def _normalize_page_count(value: Any) -> Optional[int]:
+        """将页数字段规范化为正整数。"""
+        if value is None:
+            return None
+        try:
+            page_count = int(value)
+        except (TypeError, ValueError):
+            return None
+        return page_count if page_count > 0 else None
     
     async def save_uploaded_file(self, file, filename: str) -> str:
         """保存上传的文件"""
@@ -129,6 +140,7 @@ class DocumentService:
                 return {"success": False, "message": "文本提取失败或内容为空"}
             
             text_content = processed_doc["text_content"]
+            processed_page_count = self._normalize_page_count(processed_doc.get("page_count"))
             
             # 获取LLM服务
             llm_service = get_llm_service(user_id=document.user_id, db=db)
@@ -143,6 +155,8 @@ class DocumentService:
             doc_type = analysis_result.get("doc_type", "其他")
             
             metadata_values = {k: v for k, v in analysis_result.items() if k not in ["outline", "product_entities"]}
+            if processed_page_count:
+                metadata_values.setdefault("page_count", processed_page_count)
             try:
                 cs = ConfigService(db)
                 short_merge_threshold = int(cs.get_config_value(str(document.user_id), "chunking.short_merge_threshold", "60"))
@@ -155,6 +169,8 @@ class DocumentService:
             document.outline = outline
             document.product_entities = product_entities
             document.doc_metadata_col = metadata_values
+            if processed_page_count:
+                document.page_count = processed_page_count
             document.file_type = doc_type if doc_type != "其他" else document.file_type
             
             # 3. 语义切片与向量化

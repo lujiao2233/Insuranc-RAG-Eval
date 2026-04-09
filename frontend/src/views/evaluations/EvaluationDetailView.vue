@@ -143,6 +143,7 @@ import { ElMessage, ElMessageBox } from 'element-plus'
 import { Document, Download, Delete } from '@element-plus/icons-vue'
 import * as echarts from 'echarts'
 import { useEvaluationStore } from '@/stores/evaluation'
+import { useTaskStore } from '@/stores/task'
 import { evaluationApi } from '@/api/evaluations'
 import { formatDateTime, formatDuration } from '@/utils/format'
 import type { Evaluation, EvaluationResult } from '@/types'
@@ -150,6 +151,7 @@ import type { Evaluation, EvaluationResult } from '@/types'
 const route = useRoute()
 const router = useRouter()
 const evaluationStore = useEvaluationStore()
+const taskStore = useTaskStore()
 
 const loading = ref(false)
 const evaluation = ref<Evaluation | null>(null)
@@ -159,6 +161,19 @@ const taskEvaluated = ref(0)
 const chartRef = ref<HTMLElement>()
 let chartInstance: echarts.ECharts | null = null
 let pollingTimer: number | null = null
+
+const updateEvaluationTaskStatus = (evaluationId: string, updates: { progress?: number; status?: 'running' | 'completed' | 'failed'; error?: string }) => {
+  // 兼容两种任务ID：task_id 或 evaluation_id
+  const byTaskId = taskStore.getTask(evaluationId)
+  if (byTaskId) {
+    taskStore.updateTask(evaluationId, updates)
+    return
+  }
+  const byTarget = taskStore.tasks.find(task => task.type === 'evaluation' && task.targetId === evaluationId)
+  if (byTarget) {
+    taskStore.updateTask(byTarget.id, updates)
+  }
+}
 
 const getStatusType = (status: string) => {
   const types: Record<string, string> = {
@@ -231,13 +246,32 @@ const startPolling = async () => {
         ? Math.min(100, Math.round((taskEvaluated.value / latest.total_questions) * 100))
         : 0
 
+      // 尝试更新全局任务进度 (如果有的话)
+      // 如果 evaluation 创建时关联了 task_id，可以更新。如果没存 task_id，退而求其次更新状态。
+      updateEvaluationTaskStatus(latest.id, {
+        progress: taskProgress.value,
+        status: 'running'
+      })
+
       if (latest.status === 'completed') {
         stopPolling()
+        
+        updateEvaluationTaskStatus(latest.id, {
+          progress: 100,
+          status: 'completed'
+        })
+
         await fetchResults()
         await nextTick()
         initChart()
       } else if (latest.status === 'failed') {
         stopPolling()
+        
+        updateEvaluationTaskStatus(latest.id, {
+          status: 'failed',
+          error: latest.error_message || '评估失败'
+        })
+
         ElMessage.error(latest.error_message || '评估失败')
       }
     } catch (error) {

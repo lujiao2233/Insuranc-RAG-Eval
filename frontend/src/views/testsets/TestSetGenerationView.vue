@@ -1,8 +1,14 @@
 <template>
   <div class="testset-generation-view">
+    <el-page-header @back="$router.push('/testsets')">
+      <template #content>
+        <span class="text-large font-600">新建测试集</span>
+      </template>
+    </el-page-header>
+    <el-divider />
     <el-row :gutter="20">
-      <!-- 左侧：参数配置 -->
-      <el-col :span="12">
+      <!-- 上方左侧：参数配置 -->
+      <el-col :span="16">
         <el-card class="config-card">
           <template #header>
             <div class="card-header">
@@ -10,45 +16,28 @@
             </div>
           </template>
           
-          <el-form :model="form" label-width="140px" style="max-width: 600px;">
+          <div class="config-form-wrapper" :class="{ 'is-locked': generating }">
+          <el-form :model="form" :disabled="generating" label-width="140px">
+            <el-form-item label="测试集名称" required>
+              <el-input
+                v-model="form.name"
+                maxlength="100"
+                show-word-limit
+                placeholder="请输入测试集名称"
+              />
+            </el-form-item>
             <!-- 文档选择 -->
             <el-form-item label="选择文档" required>
-              <el-select 
-                v-model="form.documentIds" 
-                multiple
-                placeholder="请选择要生成测试集的文档"
-                style="width: 100%;"
-                filterable
-              >
-                <el-option
-                  v-for="doc in analyzedDocuments"
-                  :key="doc.id"
-                  :label="doc.filename"
-                  :value="doc.id"
-                />
-              </el-select>
+              <div class="doc-picker-trigger">
+                <el-button :disabled="generating" @click="openDocumentPicker">
+                  选择文档
+                </el-button>
+                <el-text type="info">已选 {{ form.documentIds.length }} 个文档</el-text>
+              </div>
+              <div v-if="selectedDocumentPreviewText" class="selected-doc-preview">
+                {{ selectedDocumentPreviewText }}
+              </div>
             </el-form-item>
-            <el-form-item label="按分类选择">
-              <el-space wrap style="width: 100%;">
-                <el-select
-                  v-model="selectedCategory"
-                  placeholder="选择文档分类"
-                  clearable
-                  style="width: 260px;"
-                >
-                  <el-option
-                    v-for="category in documentCategories"
-                    :key="category"
-                    :label="`${category}（${categoryDocCountMap[category] || 0}）`"
-                    :value="category"
-                  />
-                </el-select>
-                <el-button @click="selectDocumentsByCategory(false)">追加该分类</el-button>
-                <el-button type="primary" plain @click="selectDocumentsByCategory(true)">仅选该分类</el-button>
-                <el-button text @click="clearDocumentSelection">清空已选文档</el-button>
-              </el-space>
-            </el-form-item>
-            
             <el-divider content-position="left">生成参数</el-divider>
             
             <!-- 问题数量 -->
@@ -61,28 +50,26 @@
               />
             </el-form-item>
             
-            <!-- 是否启用安全/鲁棒性问题 -->
-            <el-form-item label="安全与鲁棒性">
+            <el-form-item label="鲁棒性/输入质量类">
               <el-switch 
-                v-model="form.enableSafetyRobustness"
+                v-model="form.enableRobustnessInputQuality"
                 active-text="启用"
                 inactive-text="禁用"
               />
-              <div class="form-help">启用后将生成安全合规与输入质量类问题</div>
+              <div class="form-help">控制错别字、意图模糊、指代消解等问题生成</div>
             </el-form-item>
             
-            <!-- 人物画像配置 -->
-            <el-form-item label="人物画像配置">
+            <el-form-item label="合规与安全类">
               <el-switch 
-                v-model="form.enablePersona"
+                v-model="form.enableComplianceSafety"
                 active-text="启用"
                 inactive-text="禁用"
               />
-              <div class="form-help">启用后将根据人物画像生成更贴合角色的问题</div>
+              <div class="form-help">控制安全合规、隐私等风险问题生成</div>
             </el-form-item>
             
             <!-- 人物画像JSON -->
-            <el-form-item v-if="form.enablePersona" label="人物画像JSON">
+            <el-form-item label="人物画像JSON">
               <el-input
                 v-model="form.personaJson"
                 type="textarea"
@@ -95,10 +82,53 @@
               />
               <div class="form-help">定义用户角色，帮助生成更真实的问题</div>
             </el-form-item>
-            
-            <el-divider content-position="left">问题分类体系预览</el-divider>
-            
-            <!-- 分类体系展示 -->
+
+            <!-- 操作按钮 -->
+            <el-form-item class="mt-20">
+              <el-button 
+                type="primary" 
+                size="large"
+                @click="handleGenerate"
+                :loading="generating"
+                :disabled="form.documentIds.length === 0"
+                style="width: 100%;"
+              >
+                {{ generating ? `生成中... (${progressInfo.current}/${progressInfo.total})` : '开始生成测试集' }}
+              </el-button>
+            </el-form-item>
+            <el-form-item v-if="generationFailed" class="mt-10">
+              <el-button type="warning" plain style="width: 100%;" @click="retryLastSubmit">
+                使用上次参数重试
+              </el-button>
+            </el-form-item>
+            <el-alert
+              v-if="generationFailed"
+              type="error"
+              :closable="false"
+              title="生成失败，请检查参数或模型配置后重试。"
+              class="mt-10"
+            />
+            <el-alert
+              v-if="redirectingAfterSuccess"
+              type="success"
+              :closable="false"
+              title="生成成功，正在自动跳转到测试集详情..."
+              class="mt-10"
+            />
+          </el-form>
+          </div>
+        </el-card>
+      </el-col>
+
+      <!-- 上方右侧：分类体系预览（独立框） -->
+      <el-col :span="8">
+        <el-card class="taxonomy-card">
+          <template #header>
+            <div class="card-header">
+              <span>问题分类体系预览</span>
+            </div>
+          </template>
+          <div class="config-form-wrapper" :class="{ 'is-locked': generating }">
             <div class="taxonomy-preview">
               <el-collapse>
                 <el-collapse-item 
@@ -123,26 +153,12 @@
                 </el-collapse-item>
               </el-collapse>
             </div>
-            
-            <!-- 操作按钮 -->
-            <el-form-item class="mt-20">
-              <el-button 
-                type="primary" 
-                size="large"
-                @click="handleGenerate"
-                :loading="generating"
-                :disabled="form.documentIds.length === 0"
-                style="width: 100%;"
-              >
-                {{ generating ? `生成中... (${progressInfo.current}/${progressInfo.total})` : '开始生成测试集' }}
-              </el-button>
-            </el-form-item>
-          </el-form>
+          </div>
         </el-card>
       </el-col>
       
-      <!-- 右侧：生成进度和结果 -->
-      <el-col :span="12">
+      <!-- 下方：生成进度和结果 -->
+      <el-col :span="24" class="mt-20">
         <!-- 生成进度 -->
         <el-card v-if="generating || generatedQuestions.length > 0" class="progress-card">
           <template #header>
@@ -280,26 +296,73 @@
         </el-descriptions>
       </div>
     </el-dialog>
+
+    <!-- 文档选择穿梭框 -->
+    <el-dialog
+      v-model="documentPickerVisible"
+      title="选择文档"
+      width="1000px"
+      class="document-picker-dialog"
+      :close-on-click-modal="false"
+      destroy-on-close
+    >
+      <div class="document-picker-content">
+        <div class="picker-toolbar">
+          <el-select
+            v-model="pickerSelectedCategory"
+            placeholder="按分类选择"
+            clearable
+            style="width: 240px;"
+          >
+            <el-option
+              v-for="category in documentCategories"
+              :key="category"
+              :label="`${category}（${categoryDocCountMap[category] || 0}）`"
+              :value="category"
+            />
+          </el-select>
+          <el-button @click="selectPickerDocumentsByCategory(false)">追加该分类</el-button>
+          <el-button type="primary" plain @click="selectPickerDocumentsByCategory(true)">仅选该分类</el-button>
+          <el-button text @click="clearPickerDocumentSelection">清空已选</el-button>
+        </div>
+        <el-transfer
+          v-model="tempDocumentIds"
+          :data="transferData"
+          filterable
+          :filter-method="transferFilterMethod"
+          filter-placeholder="搜索文档名称/分类"
+          :titles="['可选文档', '已选文档']"
+          :props="{ key: 'key', label: 'label' }"
+          :button-texts="['移除', '添加']"
+        />
+      </div>
+      <template #footer>
+        <el-button @click="cancelDocumentPicker">取消</el-button>
+        <el-button type="primary" @click="confirmDocumentPicker">确认</el-button>
+      </template>
+    </el-dialog>
   </div>
 </template>
 
 <script setup lang="ts">
-import { ref, reactive, computed, onMounted } from 'vue'
+import { ref, reactive, computed, onMounted, onUnmounted } from 'vue'
+import { useRoute, useRouter } from 'vue-router'
 import { ElMessage, ElNotification } from 'element-plus'
-import { useDocumentStore } from '@/stores/document'
-import { useTestSetStore } from '@/stores/testset'
 import { testsetApi } from '@/api/testsets'
+import { documentApi } from '@/api/documents'
+import { useTaskStore } from '@/stores/task'
 
-// 文档存储
-const documentStore = useDocumentStore()
-const testSetStore = useTestSetStore()
+const router = useRouter()
+const route = useRoute()
+const taskStore = useTaskStore()
 
 // 表单数据
 const form = reactive({
+  name: `测试集_${new Date().toISOString().slice(0, 19).replace(/:/g, '-')}`,
   documentIds: [] as string[],
   questionsPerDoc: 10,
-  enableSafetyRobustness: true,
-  enablePersona: false,
+  enableRobustnessInputQuality: false,
+  enableComplianceSafety: false,
   personaJson: ''
 })
 
@@ -312,6 +375,18 @@ const generationFailed = ref(false)
 const createdTestsetId = ref<string | null>(null)
 const generatedQuestions = ref<any[]>([])
 const filterText = ref('')
+const initialLoading = ref(false)
+const redirectingAfterSuccess = ref(false)
+const documents = ref<any[]>([])
+const lastSubmitPayload = ref<null | {
+  name: string
+  documentIds: string[]
+  questionsPerDoc: number
+  enableSafetyRobustness: boolean
+  personaJson: string
+}>(null)
+let pollingTimer: number | null = null
+let autoRedirectTimer: number | null = null
 
 // 进度信息
 const progressInfo = reactive({
@@ -348,10 +423,53 @@ const filteredQuestions = computed(() => {
 })
 
 // 已分析的文档
-const analyzedDocuments = computed(() => 
-  documentStore.documents.filter(doc => doc.is_analyzed)
+const analyzedDocuments = computed(() =>
+  documents.value.filter((doc: any) => doc.is_analyzed)
 )
-const selectedCategory = ref('')
+const transferData = computed(() =>
+  analyzedDocuments.value.map((doc: any) => {
+    const category = String(doc?.category || '').trim() || '未分类'
+    return {
+      key: doc.id,
+      label: `${doc.filename}（${category}）`
+    }
+  })
+)
+const transferFilterMethod = (query: string, item: { label: string }) => {
+  if (!query) return true
+  return item.label.toLowerCase().includes(query.toLowerCase())
+}
+const documentPickerVisible = ref(false)
+const tempDocumentIds = ref<string[]>([])
+const pickerSelectedCategory = ref('')
+const documentNameMap = computed<Record<string, string>>(() => {
+  const map: Record<string, string> = {}
+  for (const doc of analyzedDocuments.value) {
+    map[doc.id] = doc.filename
+  }
+  return map
+})
+const selectedDocumentPreviewText = computed(() => {
+  if (form.documentIds.length === 0) return ''
+  const names = form.documentIds
+    .slice(0, 3)
+    .map(id => documentNameMap.value[id] || id)
+  const more = form.documentIds.length > 3 ? ` 等${form.documentIds.length}个` : ''
+  return `已选: ${names.join('，')}${more}`
+})
+const openDocumentPicker = () => {
+  tempDocumentIds.value = [...form.documentIds]
+  pickerSelectedCategory.value = ''
+  documentPickerVisible.value = true
+}
+const confirmDocumentPicker = () => {
+  form.documentIds = [...tempDocumentIds.value]
+  documentPickerVisible.value = false
+}
+const cancelDocumentPicker = () => {
+  pickerSelectedCategory.value = ''
+  documentPickerVisible.value = false
+}
 const normalizeCategory = (doc: any) => String(doc?.category || '').trim() || '未分类'
 const documentCategories = computed(() => {
   const set = new Set<string>()
@@ -369,29 +487,29 @@ const categoryDocCountMap = computed<Record<string, number>>(() => {
   return map
 })
 
-const selectDocumentsByCategory = (replaceSelection: boolean) => {
-  if (!selectedCategory.value) {
+const selectPickerDocumentsByCategory = (replaceSelection: boolean) => {
+  if (!pickerSelectedCategory.value) {
     ElMessage.warning('请先选择文档分类')
     return
   }
   const targetIds = analyzedDocuments.value
-    .filter(doc => normalizeCategory(doc) === selectedCategory.value)
+    .filter(doc => normalizeCategory(doc) === pickerSelectedCategory.value)
     .map(doc => doc.id)
   if (targetIds.length === 0) {
-    ElMessage.warning(`分类“${selectedCategory.value}”下没有可用文档`)
+    ElMessage.warning(`分类“${pickerSelectedCategory.value}”下没有可用文档`)
     return
   }
 
   if (replaceSelection) {
-    form.documentIds = targetIds
+    tempDocumentIds.value = targetIds
   } else {
-    form.documentIds = Array.from(new Set([...form.documentIds, ...targetIds]))
+    tempDocumentIds.value = Array.from(new Set([...tempDocumentIds.value, ...targetIds]))
   }
-  ElMessage.success(`已选中分类“${selectedCategory.value}”下 ${targetIds.length} 个文档`)
+  ElMessage.success(`已选中分类“${pickerSelectedCategory.value}”下 ${targetIds.length} 个文档`)
 }
 
-const clearDocumentSelection = () => {
-  form.documentIds = []
+const clearPickerDocumentSelection = () => {
+  tempDocumentIds.value = []
 }
 
 // 详情对话框
@@ -417,115 +535,232 @@ const loadTaxonomy = async () => {
 }
 
 // 生成测试集
+const stopPolling = () => {
+  if (pollingTimer) {
+    window.clearInterval(pollingTimer)
+    pollingTimer = null
+  }
+}
+
+const scheduleAutoRedirect = () => {
+  if (!createdTestsetId.value) return
+  redirectingAfterSuccess.value = true
+  if (autoRedirectTimer) {
+    window.clearTimeout(autoRedirectTimer)
+  }
+  autoRedirectTimer = window.setTimeout(() => {
+    if (createdTestsetId.value) {
+      router.push(`/testsets/${createdTestsetId.value}`)
+    }
+  }, 1200)
+}
+
+const pollTaskStatus = (taskId: string) => {
+  let lastLogIndex = 0
+  const poll = async () => {
+    try {
+      const task = await testsetApi.getTaskStatus(taskId)
+      progressInfo.stage = task.message || task.status
+
+      if (typeof task.progress === 'number' && progressInfo.total > 0) {
+        const currentByProgress = Math.round(task.progress * progressInfo.total)
+        if (currentByProgress > progressInfo.current) {
+          progressInfo.current = currentByProgress
+        }
+      }
+
+      // 更新全局任务状态
+      taskStore.updateTask(taskId, {
+        progress: progressPercentage.value,
+        status: 'running'
+      })
+
+      if (task.logs && task.logs.length > lastLogIndex) {
+        const newLogs = task.logs.slice(lastLogIndex)
+        for (const log of newLogs) {
+          progressInfo.logs.push(log)
+        }
+        lastLogIndex = task.logs.length
+      }
+
+      if (task.status === 'finished') {
+        stopPolling()
+        generating.value = false
+        generatedQuestions.value = task.result?.questions || []
+        progressInfo.current = generatedQuestions.value.length || progressInfo.total
+        progressInfo.stage = '生成完成'
+        
+        // 更新全局任务为完成
+        taskStore.updateTask(taskId, {
+          progress: 100,
+          status: 'completed'
+        })
+
+        ElNotification({
+          title: '生成成功',
+          message: `已生成 ${generatedQuestions.value.length} 个问题，正在跳转详情页`,
+          type: 'success'
+        })
+        scheduleAutoRedirect()
+        return
+      }
+
+      if (task.status === 'failed') {
+        stopPolling()
+        generating.value = false
+        generationFailed.value = true
+        progressInfo.stage = '生成失败'
+        
+        // 更新全局任务为失败
+        taskStore.updateTask(taskId, {
+          status: 'failed',
+          error: task.error || '未知错误'
+        })
+
+        const err = task.error || '未知错误'
+        progressInfo.logs.push(`错误: ${err}`)
+        ElNotification({
+          title: '生成失败',
+          message: `任务执行失败：${err}，可直接点击“使用上次参数重试”`,
+          type: 'error'
+        })
+      }
+    } catch (error: any) {
+      stopPolling()
+      generating.value = false
+      generationFailed.value = true
+      progressInfo.stage = '生成失败'
+      
+      // 更新全局任务为失败
+      taskStore.updateTask(taskId, {
+        status: 'failed',
+        error: error?.message || '网络异常'
+      })
+
+      const err = error?.response?.data?.detail || error?.message || '网络异常'
+      progressInfo.logs.push(`轮询失败: ${err}`)
+      ElNotification({
+        title: '网络异常',
+        message: `状态轮询失败：${err}，请重试`,
+        type: 'error'
+      })
+    }
+  }
+
+  poll()
+  pollingTimer = window.setInterval(poll, 2000)
+}
+
+const submitGeneration = async (payload: {
+  name: string
+  documentIds: string[]
+  questionsPerDoc: number
+  enableSafetyRobustness: boolean
+  personaJson: string
+}) => {
+  generating.value = true
+  generationFailed.value = false
+  redirectingAfterSuccess.value = false
+  generatedQuestions.value = []
+  progressInfo.stage = '准备中'
+  progressInfo.current = 0
+  progressInfo.total = payload.documentIds.length * payload.questionsPerDoc
+  progressInfo.logs = []
+
+  let personaList: any[] = []
+  if (payload.personaJson) {
+    personaList = JSON.parse(payload.personaJson)
+  }
+
+  const testSet = await testsetApi.createTestSet({
+    document_id: payload.documentIds[0],
+    name: payload.name,
+    description: `自动生成的测试集，包含${payload.questionsPerDoc}个问题/文档`
+  })
+  createdTestsetId.value = testSet.id
+  progressInfo.stage = '开始生成'
+  progressInfo.logs.push('创建测试集成功，开始异步生成问题...')
+
+  const { task_id } = await testsetApi.generateQuestionsAsync(testSet.id, {
+    num_questions: payload.questionsPerDoc * payload.documentIds.length,
+    generation_mode: 'advanced',
+    enable_safety_robustness: payload.enableSafetyRobustness,
+    document_ids: payload.documentIds,
+    persona_list: personaList
+  })
+  
+  // 添加到全局任务列表
+  taskStore.addTask({
+    id: task_id,
+    name: `生成测试集: ${payload.name}`,
+    type: 'testset',
+    progress: 0,
+    status: 'running',
+    targetId: testSet.id
+  })
+
+  progressInfo.logs.push(`任务已创建: ${task_id}`)
+  pollTaskStatus(task_id)
+}
+
 const handleGenerate = async () => {
+  const name = form.name.trim()
+  if (!name) {
+    ElMessage.warning('请输入测试集名称')
+    return
+  }
   if (form.documentIds.length === 0) {
     ElMessage.warning('请至少选择一个文档')
     return
   }
-  
-  // 解析人物画像
-  let personaList: any[] = []
-  if (form.enablePersona && form.personaJson) {
+  if (form.personaJson.trim()) {
     try {
-      personaList = JSON.parse(form.personaJson)
-    } catch (e) {
+      JSON.parse(form.personaJson)
+    } catch {
       ElMessage.error('人物画像JSON格式不正确')
       return
     }
   }
-  
-  generating.value = true
-  generationFailed.value = false
-  generatedQuestions.value = []
-  progressInfo.stage = '准备中'
-  progressInfo.current = 0
-  progressInfo.total = form.documentIds.length * form.questionsPerDoc
-  progressInfo.logs = []
-  
+
+  const payload = {
+    name,
+    documentIds: [...form.documentIds],
+    questionsPerDoc: form.questionsPerDoc,
+    enableSafetyRobustness: form.enableRobustnessInputQuality || form.enableComplianceSafety,
+    personaJson: form.personaJson.trim()
+  }
+  lastSubmitPayload.value = payload
+
   try {
-    // 创建测试集
-    const testSet = await testSetStore.createTestSet({
-      document_id: form.documentIds[0],
-      name: `测试集_${new Date().toISOString().slice(0, 19).replace(/:/g, '-')}`,
-      description: `自动生成的测试集，包含${form.questionsPerDoc}个问题/文档`
-    })
-    
-    createdTestsetId.value = testSet.id
-    progressInfo.stage = '开始生成'
-    progressInfo.logs.push('创建测试集成功，开始生成问题...')
-    
-    // 逐个文档生成问题
-    for (let i = 0; i < form.documentIds.length; i++) {
-      const docId = form.documentIds[i]
-      progressInfo.stage = `处理文档 ${i + 1}/${form.documentIds.length}`
-      progressInfo.logs.push(`开始处理文档 ${i + 1}...`)
-      
-      try {
-        // 调用生成API
-        const result = await testsetApi.generateQuestions(testSet.id, {
-          num_questions: form.questionsPerDoc,
-          generation_mode: 'advanced',
-          enable_safety_robustness: form.enableSafetyRobustness
-        })
-        
-        if (result.questions && result.questions.length > 0) {
-          // 添加到结果中
-          for (const q of result.questions) {
-            generatedQuestions.value.push({
-              ...q,
-              passed: true
-            })
-            progressInfo.current++
-          }
-          progressInfo.logs.push(`文档 ${i + 1} 生成完成，获得 ${result.questions.length} 个问题`)
-        }
-      } catch (error: any) {
-        console.error(`文档 ${i + 1} 生成失败:`, error)
-        progressInfo.logs.push(`文档 ${i + 1} 生成失败: ${error?.response?.data?.detail || error?.message || '未知错误'}`)
-      }
-    }
-    
-    progressInfo.stage = '生成完成'
-    progressInfo.logs.push(`所有文档处理完成，共生成 ${generatedQuestions.value.length} 个问题`)
-    
-    // 判断是否生成成功
-    if (generatedQuestions.value.length === 0) {
-      generationFailed.value = true
-      progressInfo.stage = '生成失败'
-      progressInfo.logs.push('未能生成任何问题，测试集创建失败')
-      
-      // 删除已创建的空测试集
-      if (createdTestsetId.value) {
-        try {
-          await testsetApi.deleteTestSet(createdTestsetId.value)
-          progressInfo.logs.push('已删除创建的空测试集')
-        } catch (deleteError) {
-          console.error('删除空测试集失败:', deleteError)
-        }
-        createdTestsetId.value = null
-      }
-      
-      ElNotification({
-        title: '生成失败',
-        message: '未能生成任何问题，请检查LLM配置是否正确（DASHSCOPE_API_KEY或QWEN_API_KEY）',
-        type: 'error'
-      })
-    } else {
-      ElNotification({
-        title: '生成完成',
-        message: `成功生成 ${generatedQuestions.value.length} 个测试问题`,
-        type: 'success'
-      })
-    }
-    
+    await submitGeneration(payload)
   } catch (error: any) {
-    console.error('生成测试集失败:', error)
-    generationFailed.value = true
-    ElMessage.error(error?.response?.data?.detail || error?.message || '生成测试集失败')
-    progressInfo.stage = '生成失败'
-    progressInfo.logs.push(`错误: ${error?.response?.data?.detail || error?.message || '未知错误'}`)
-  } finally {
     generating.value = false
+    generationFailed.value = true
+    const err = error?.response?.data?.detail || error?.message || '未知错误'
+    progressInfo.stage = '生成失败'
+    progressInfo.logs.push(`错误: ${err}`)
+    ElNotification({
+      title: '提交失败',
+      message: `创建任务失败：${err}`,
+      type: 'error'
+    })
+  }
+}
+
+const retryLastSubmit = async () => {
+  if (!lastSubmitPayload.value) {
+    ElMessage.warning('暂无可重试的参数，请先提交一次')
+    return
+  }
+  try {
+    await submitGeneration(lastSubmitPayload.value)
+  } catch (error: any) {
+    generating.value = false
+    generationFailed.value = true
+    const err = error?.response?.data?.detail || error?.message || '未知错误'
+    progressInfo.stage = '生成失败'
+    progressInfo.logs.push(`重试失败: ${err}`)
+    ElMessage.error(`重试失败：${err}`)
   }
 }
 
@@ -569,10 +804,32 @@ const exportCSV = () => {
 
 // 初始化
 onMounted(async () => {
-  documentStore.pagination.page = 1
-  documentStore.pagination.size = 1000
-  await documentStore.fetchDocuments({ is_analyzed: true })
+  initialLoading.value = true
+  try {
+    const response = await documentApi.getDocuments({ is_analyzed: true, limit: 1000 })
+    documents.value = response.items || []
+  } finally {
+    initialLoading.value = false
+  }
+
+  const queryDocumentId = typeof route.query.document_id === 'string' ? route.query.document_id : ''
+  const queryTestsetName = typeof route.query.testset_name === 'string' ? route.query.testset_name : ''
+  if (queryDocumentId) {
+    form.documentIds = [queryDocumentId]
+  }
+  if (queryTestsetName.trim()) {
+    form.name = queryTestsetName.trim()
+  }
+
   await loadTaxonomy()
+})
+
+onUnmounted(() => {
+  stopPolling()
+  if (autoRedirectTimer) {
+    window.clearTimeout(autoRedirectTimer)
+    autoRedirectTimer = null
+  }
 })
 </script>
 
@@ -586,10 +843,85 @@ onMounted(async () => {
     align-items: center;
   }
   
-  .config-card, .progress-card, .result-card, .empty-card {
+  .config-card, .taxonomy-card, .progress-card, .result-card, .empty-card {
     height: 100%;
   }
-  
+
+  .config-form-wrapper {
+    &.is-locked {
+      pointer-events: none;
+      opacity: 0.75;
+      user-select: none;
+    }
+
+  }
+
+  .document-picker-content {
+    height: 68vh;
+    display: flex;
+    flex-direction: column;
+
+    .picker-toolbar {
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      margin-bottom: 12px;
+      flex-wrap: wrap;
+    }
+
+    :deep(.el-transfer) {
+      display: flex;
+      align-items: stretch;
+      gap: 12px;
+      width: 100%;
+      flex: 1;
+      min-height: 0;
+    }
+
+    :deep(.el-transfer-panel) {
+      flex: 0 0 calc((100% - 120px) / 2);
+      width: calc((100% - 120px) / 2);
+      min-width: 0;
+      height: 100%;
+    }
+
+    :deep(.el-transfer-panel__body) {
+      height: calc(100% - 40px);
+      display: flex;
+      flex-direction: column;
+    }
+
+    :deep(.el-transfer-panel__list) {
+      flex: 1;
+    }
+
+    :deep(.el-transfer__buttons) {
+      flex: 0 0 96px;
+      width: 96px;
+      height: 100%;
+      display: flex;
+      flex-direction: column;
+      justify-content: center;
+      align-items: center;
+      gap: 12px;
+      background: #f8fafc;
+      border-radius: 8px;
+    }
+  }
+
+  .doc-picker-trigger {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+  }
+
+  .selected-doc-preview {
+    margin-top: 6px;
+    font-size: 12px;
+    color: #909399;
+    line-height: 1.4;
+  }
+
   .form-help {
     font-size: 12px;
     color: #909399;
@@ -610,7 +942,7 @@ onMounted(async () => {
   }
   
   .taxonomy-preview {
-    max-height: 300px;
+    max-height: 520px;
     overflow-y: auto;
     
     .taxonomy-major {

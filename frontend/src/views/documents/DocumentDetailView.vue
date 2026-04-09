@@ -83,7 +83,7 @@
             </div>
           </el-tab-pane>
 
-          <el-tab-pane label="已切片段" name="chunks" v-if="document.is_analyzed">
+          <el-tab-pane label="文档切片" name="chunks" v-if="document.is_analyzed">
             <div class="chunk-filters mb-4">
               <el-input
                 v-model="chunkQuery.keyword"
@@ -173,7 +173,7 @@
             </el-button>
             <el-button type="success" @click="createTestset" v-if="document.is_analyzed">
               <el-icon><Plus /></el-icon>
-              创建测试集
+              生成测试集
             </el-button>
             <el-button type="danger" @click="handleDelete">
               <el-icon><Delete /></el-icon>
@@ -182,12 +182,12 @@
           </div>
         </el-card>
         
-        <el-card class="mt-4">
+        <el-card class="related-testsets-card">
           <template #header>
             <span>关联测试集</span>
           </template>
           <el-empty v-if="!testsets.length" description="暂无关联测试集" />
-          <div v-else>
+          <div v-else class="testset-list">
             <div
               v-for="testset in testsets"
               :key="testset.id"
@@ -255,6 +255,7 @@
         </div>
       </div>
     </el-dialog>
+
   </div>
 </template>
 
@@ -266,7 +267,7 @@ import { Download, Plus, Delete, ArrowRight, DataAnalysis, InfoFilled, Search } 
 import { documentApi } from '@/api/documents'
 import { testsetApi } from '@/api/testsets'
 import { formatFileSize, formatDateTime } from '@/utils/format'
-import type { Document, TestSet } from '@/types'
+import type { TestSet } from '@/types'
 
 const route = useRoute()
 const router = useRouter()
@@ -315,12 +316,21 @@ const METADATA_LABEL_MAP: Record<string, string> = {
 const getMetadataLabel = (key: string) => METADATA_LABEL_MAP[key] || key
 
 const getPageCountDisplay = (doc: any) => {
-  if (typeof doc?.page_count === 'number' && doc.page_count > 0) {
-    return doc.page_count
+  const normalizePageCount = (value: unknown): number | null => {
+    if (value === null || value === undefined || value === '') return null
+    const num = Number(value)
+    if (!Number.isFinite(num)) return null
+    const intVal = Math.trunc(num)
+    return intVal > 0 ? intVal : null
+  }
+
+  const direct = normalizePageCount(doc?.page_count)
+  if (direct) {
+    return direct
   }
   const meta = (doc?.doc_metadata || {}) as Record<string, any>
-  const fallback = meta.page_count ?? meta.total_pages ?? meta.pages
-  if (typeof fallback === 'number' && fallback > 0) {
+  const fallback = normalizePageCount(meta.page_count ?? meta.total_pages ?? meta.pages)
+  if (fallback) {
     return fallback
   }
   return '-'
@@ -473,7 +483,19 @@ const handleDownload = async () => {
 }
 
 const createTestset = () => {
-  router.push(`/testsets?document_id=${document.value?.id}`)
+  if (!document.value?.id) return
+  const fallbackName = `测试集_${new Date().toISOString().slice(0, 19).replace(/:/g, '-')}`
+  const filename = String(document.value.filename || '')
+  const dotIndex = filename.lastIndexOf('.')
+  const baseName = dotIndex > 0 ? filename.slice(0, dotIndex) : filename
+  const defaultName = baseName ? `${baseName}_测试集` : fallbackName
+  router.push({
+    path: '/testsets/new',
+    query: {
+      document_id: document.value.id,
+      testset_name: defaultName
+    }
+  })
 }
 
 const handleDelete = async () => {
@@ -540,6 +562,16 @@ onMounted(async () => {
       display: inline-flex;
       justify-content: center;
     }
+  }
+
+  .related-testsets-card {
+    margin-top: 20px;
+  }
+
+  .testset-list {
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
   }
   
   .testset-item {

@@ -4,7 +4,7 @@
       <template #header>
         <div class="card-header">
           <span>测试集管理</span>
-          <el-button type="primary" @click="showGenerationDialog = true">
+          <el-button type="primary" @click="router.push('/testsets/new')">
             <el-icon><Plus /></el-icon>
             新建测试集
           </el-button>
@@ -21,16 +21,6 @@
           @input="filterTestsets"
         />
         
-        <el-select 
-          v-model="methodFilter" 
-          placeholder="生成方式" 
-          clearable
-          style="width: 150px; margin-right: 10px;"
-          @change="filterTestsets"
-        >
-          <el-option label="自动生成" value="auto" />
-          <el-option label="手动创建" value="manual" />
-        </el-select>
       </div>
       
       <el-table
@@ -45,23 +35,9 @@
             </el-link>
           </template>
         </el-table-column>
-        <el-table-column prop="description" label="描述" min-width="200">
-          <template #default="{ row }">
-            <el-text truncated>{{ row.description || '-' }}</el-text>
-          </template>
-        </el-table-column>
         <el-table-column prop="question_count" label="问题数" width="100">
           <template #default="{ row }">
-            <el-tag :type="getQuestionCountType(row.question_count)">
-              {{ row.question_count }}
-            </el-tag>
-          </template>
-        </el-table-column>
-        <el-table-column prop="generation_method" label="生成方式" width="120">
-          <template #default="{ row }">
-            <el-tag :type="getMethodType(row.generation_method)">
-              {{ getMethodText(row.generation_method) }}
-            </el-tag>
+            <span>{{ row.question_count }}</span>
           </template>
         </el-table-column>
         <el-table-column prop="create_time" label="创建时间" width="180">
@@ -75,7 +51,7 @@
               <el-button type="primary" size="small" class="fixed-width-btn" @click="viewTestset(row.id)">
                 查看
               </el-button>
-              <el-button type="success" size="small" class="fixed-width-btn" @click="runExecution(row)">
+              <el-button type="success" size="small" class="fixed-width-btn" @click="goExecutePage(row)">
                 执行
               </el-button>
             </div>
@@ -118,6 +94,15 @@
           :model="generationForm"
           label-width="150px"
         >
+          <el-form-item label="测试集名称" prop="name" required>
+            <el-input
+              v-model="generationForm.name"
+              placeholder="请输入测试集名称"
+              maxlength="100"
+              show-word-limit
+            />
+          </el-form-item>
+
           <!-- 文档选择 -->
           <el-form-item label="选择文档" prop="documentIds" required>
             <el-select
@@ -423,7 +408,6 @@ const pageSize = ref(10)
 
 // 筛选相关
 const searchQuery = ref('')
-const methodFilter = ref('')
 
 // 生成配置相关
 const showGenerationDialog = ref(false)
@@ -482,8 +466,11 @@ const progressInfo = reactive({
 // 生成的问题
 const generatedQuestions = ref<any[]>([])
 
+const getDefaultTestsetName = () => `测试集_${new Date().toISOString().slice(0, 19).replace(/:/g, '-')}`
+
 // 生成表单
 const generationForm = reactive({
+  name: getDefaultTestsetName(),
   documentIds: [] as string[],
   questionsPerDoc: 10,
   enableSafetyRobustness: true,
@@ -559,21 +546,6 @@ const progressStatus = computed(() => {
   return 'exception'
 })
 
-const getQuestionCountType = (count: number) => {
-  if (count === 0) return 'danger'
-  if (count < 10) return 'warning'
-  if (count < 50) return 'primary'
-  return 'success'
-}
-
-const getMethodType = (method: string) => {
-  return method === 'auto' ? 'success' : 'info'
-}
-
-const getMethodText = (method: string) => {
-  return method === 'auto' ? '自动生成' : '手动创建'
-}
-
 const isUploadedTestset = (testset: TestSet) => {
   return testset.generation_method === 'csv_import' || Boolean(testset.metadata?.imported)
 }
@@ -628,10 +600,6 @@ const filterTestsets = () => {
     )
   }
   
-  if (methodFilter.value) {
-    result = result.filter(ts => ts.generation_method === methodFilter.value)
-  }
-  
   filteredTestsets.value = result
   currentPage.value = 1
 }
@@ -649,17 +617,8 @@ const viewTestset = (id: string) => {
   router.push(`/testsets/${id}`)
 }
 
-const runExecution = (testset: TestSet) => {
-  currentExecuteTestsetId.value = testset.id
-  executionForm.verifyCode = ''
-  executing.value = false
-  executionComplete.value = false
-  executionFailed.value = false
-  executionInfo.stage = '准备中'
-  executionInfo.current = 0
-  executionInfo.total = 0
-  executionInfo.logs = []
-  showExecutionDialog.value = true
+const goExecutePage = (testset: TestSet) => {
+  router.push(`/testsets/${testset.id}/execute`)
 }
 
 const handleSendVerifyCode = async () => {
@@ -899,6 +858,12 @@ const pollTaskStatus = async (taskId: string, testsetId: string) => {
 
 // 开始生成测试集
 const startGeneration = async () => {
+  const name = generationForm.name.trim()
+  if (!name) {
+    ElMessage.warning('请输入测试集名称')
+    return
+  }
+
   if (generationForm.documentIds.length === 0) {
     ElMessage.warning('请至少选择一个文档')
     return
@@ -928,7 +893,7 @@ const startGeneration = async () => {
     // 创建测试集
     const testset = await testsetApi.createTestSet({
       document_id: generationForm.documentIds[0],
-      name: `测试集_${new Date().toISOString().slice(0, 19).replace(/:/g, '-')}`,
+      name,
       description: `自动生成的测试集，包含${generationForm.questionsPerDoc}个问题/文档`
     })
     
@@ -966,6 +931,7 @@ const resetGeneration = () => {
   generationFailed.value = false
   generatedQuestions.value = []
   createdTestsetId.value = null
+  generationForm.name = getDefaultTestsetName()
   generationForm.documentIds = []
   generationForm.questionsPerDoc = 10
   generationForm.enableSafetyRobustness = true

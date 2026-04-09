@@ -245,12 +245,14 @@ import { ElMessage, ElMessageBox, ElLoading } from 'element-plus'
 import { Upload, Search, UploadFilled } from '@element-plus/icons-vue'
 import { useDocumentStore } from '@/stores/document'
 import { documentApi } from '@/api/documents'
+import { useTaskStore } from '@/stores/task'
 import { formatDateTime } from '@/utils/format'
 import type { UploadFile } from 'element-plus'
 import type { Document } from '@/types'
 
 const router = useRouter()
 const documentStore = useDocumentStore()
+const taskStore = useTaskStore()
 
 const searchText = ref('')
 const statusFilter = ref('')
@@ -292,13 +294,33 @@ const stopPolling = () => {
   }
 }
 
-// 监听文档列表，如果有正在处理的文档，启动轮询
-watch(() => documentStore.documents, (newDocs) => {
+// 监听文档列表，同步更新全局任务状态
+watch(() => documentStore.documents, (newDocs, oldDocs) => {
   const hasProcessing = newDocs.some(doc => doc.status === 'processing')
   if (hasProcessing) {
     startPolling()
   } else {
     stopPolling()
+  }
+  
+  // 对比新旧列表，同步状态到全局任务中心
+  if (oldDocs) {
+    oldDocs.forEach(oldDoc => {
+      const newDoc = newDocs.find(d => d.id === oldDoc.id)
+      const task = taskStore.getTask(oldDoc.id)
+      
+      if (task && newDoc) {
+        // 从处理中变为完成或失败
+        if (oldDoc.status === 'processing' && newDoc.status !== 'processing') {
+          isAnalyzing.value[newDoc.id] = false
+          if (newDoc.is_analyzed) {
+            taskStore.updateTask(newDoc.id, { progress: 100, status: 'completed' })
+          } else {
+            taskStore.updateTask(newDoc.id, { status: 'failed', error: '文档分析失败或被中断' })
+          }
+        }
+      }
+    })
   }
 }, { deep: true })
 
@@ -446,6 +468,18 @@ const handleBatchAnalyze = async () => {
     const documentIds = unanalyzedDocs.map(doc => doc.id)
     const result = await documentApi.analyzeDocumentsBatch(documentIds)
     
+    // 添加批量分析任务到全局任务列表
+    unanalyzedDocs.forEach(doc => {
+      taskStore.addTask({
+        id: doc.id,
+        name: `解析文档: ${doc.filename}`,
+        type: 'document',
+        progress: 0,
+        status: 'running',
+        targetId: doc.id
+      })
+    })
+
     ElMessage.success(result.message)
     
     // 更新UI显示
@@ -507,6 +541,16 @@ const analyzeDocument = async (doc: Document) => {
   try {
     const result = await documentApi.analyzeDocument(doc.id)
     
+    // 添加到全局任务列表
+    taskStore.addTask({
+      id: doc.id, // 使用文档ID作为任务ID，因为文档解析没有独立的task_id返回
+      name: `解析文档: ${doc.filename}`,
+      type: 'document',
+      progress: 0,
+      status: 'running',
+      targetId: doc.id
+    })
+    
     ElMessage.success(result.message || '文档分析已启动')
     
     fetchDocuments()
@@ -514,8 +558,11 @@ const analyzeDocument = async (doc: Document) => {
     console.error('分析失败:', error)
     ElMessage.error(error?.response?.data?.detail || '启动分析失败')
   } finally {
-    // 移除加载状态
-    isAnalyzing.value[doc.id] = false
+    // 注意：如果是异步任务，不要立即移除按钮加载状态，让轮询来接管
+    // 只有在同步出错时才重置状态
+    if (!taskStore.getTask(doc.id)) {
+      isAnalyzing.value[doc.id] = false
+    }
   }
 }
 

@@ -42,6 +42,16 @@ def sanitize_filename(filename: str) -> str:
     return filename
 
 
+def _normalize_page_count(value) -> Optional[int]:
+    if value is None:
+        return None
+    try:
+        page_count = int(value)
+    except (TypeError, ValueError):
+        return None
+    return page_count if page_count > 0 else None
+
+
 @router.get("/", response_model=PaginatedResponse)
 async def list_documents(
     skip: int = Query(0, ge=0),
@@ -113,6 +123,14 @@ async def get_document(
         asyncio.create_task(ds.analyze_document_task(str(document_id), str(current_user.id), task_id))
     
     doc_data = Document.from_orm(document).dict()
+    if not doc_data.get("page_count"):
+        meta = doc_data.get("doc_metadata") or {}
+        fallback = meta.get("page_count") or meta.get("total_pages") or meta.get("pages")
+        normalized = _normalize_page_count(fallback)
+        if normalized:
+            doc_data["page_count"] = normalized
+            document.page_count = normalized
+            db.commit()
     doc_data["task_id"] = task_id
     
     return doc_data

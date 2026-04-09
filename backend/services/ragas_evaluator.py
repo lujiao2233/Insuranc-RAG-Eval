@@ -464,6 +464,7 @@ class RagasEvaluator:
         if not DEEPEVAL_AVAILABLE:
             raise RuntimeError("DeepEval评估依赖未安装，请安装 deepeval 后重试")
         cfg = run_config or {}
+        progress_callback = cfg.get("progress_callback") if isinstance(cfg, dict) else None
         runtime_cfg = llm_config or self._configure_llm_environment(
             user_id=str(cfg.get("user_id")) if cfg.get("user_id") else None,
             db_session=cfg.get("db_session"),
@@ -627,10 +628,18 @@ class RagasEvaluator:
         # 使用多线程并发评估各个题目，极大提升执行效率
         with ThreadPoolExecutor(max_workers=min(10, len(rows) or 1)) as executor:
             future_to_row = {executor.submit(evaluate_single_row, row): row for row in rows}
+            completed_count = 0
+            total_count = len(rows)
             for future in as_completed(future_to_row):
                 try:
                     result = future.result()
                     results.append(result)
+                    completed_count += 1
+                    if callable(progress_callback):
+                        try:
+                            progress_callback(completed_count, total_count)
+                        except Exception as cb_error:
+                            logger.warning(f"进度回调执行失败: {cb_error}")
                 except Exception as exc:
                     raise RuntimeError(f"DeepEval 并发执行时出错: {exc}")
 

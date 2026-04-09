@@ -64,7 +64,19 @@ def run_evaluation_task(
             return
         
         task_manager.append_log(task_id, f"加载了 {len(questions)} 个问题")
-        task_manager.update_progress(task_id, 0.1, "准备评估数据")
+        def sync_estimated_progress(progress_ratio: float, message: str):
+            ratio = max(0.0, min(float(progress_ratio or 0.0), 1.0))
+            task_manager.update_progress(task_id, ratio, message)
+            try:
+                evaluation.evaluated_questions = min(
+                    len(questions),
+                    max(0, int(round(ratio * len(questions))))
+                )
+                db.commit()
+            except Exception:
+                db.rollback()
+
+        sync_estimated_progress(0.1, "准备评估数据")
         
         question_data = []
         for q in questions:
@@ -78,13 +90,27 @@ def run_evaluation_task(
             })
         
         task_manager.append_log(task_id, f"使用 {evaluation_method} 引擎进行评估")
-        task_manager.update_progress(task_id, 0.2, "开始评估")
+        sync_estimated_progress(0.2, "开始评估")
         
+        def on_progress(done: int, total: int):
+            """评估进行中回调：同步任务进度与DB计数，供前端实时展示。"""
+            safe_total = max(1, int(total or 0))
+            safe_done = max(0, min(int(done or 0), safe_total))
+            progress_ratio = safe_done / safe_total
+
+            task_manager.update_progress(task_id, progress_ratio, f"评估进度: {safe_done}/{safe_total}")
+            try:
+                evaluation.evaluated_questions = safe_done
+                db.commit()
+            except Exception:
+                db.rollback()
+
         run_config = {
             "timeout": 300,
             "max_workers": 4,
             "user_id": str(evaluation.user_id) if getattr(evaluation, "user_id", None) else None,
             "db_session": db,
+            "progress_callback": on_progress,
         }
         
         result = evaluator.evaluate(
@@ -101,7 +127,7 @@ def run_evaluation_task(
             task_manager.fail_task(task_id, result["error"])
             return
         
-        task_manager.update_progress(task_id, 0.8, "保存评估结果")
+        sync_estimated_progress(0.8, "保存评估结果")
         task_manager.append_log(task_id, f"评估完成，保存 {len(result.get('individual_results', []))} 个结果")
         
         eval_results_to_add = []

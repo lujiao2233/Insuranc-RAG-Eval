@@ -48,16 +48,34 @@ const routes: RouteRecordRaw[] = [
         meta: { title: '测试集管理', keepAlive: true }
       },
       {
+        path: 'testsets/new',
+        name: 'TestSetCreate',
+        component: () => import('@/views/testsets/TestSetGenerationView.vue'),
+        meta: { title: '新建测试集', keepAlive: true }
+      },
+      {
         path: 'testsets/:id',
         name: 'TestSetDetail',
         component: () => import('@/views/testsets/TestSetDetailView.vue'),
         meta: { title: '测试集详情' }
       },
       {
+        path: 'testsets/:id/execute',
+        name: 'TestSetExecute',
+        component: () => import('@/views/testsets/TestSetExecutionView.vue'),
+        meta: { title: '执行测试集', keepAlive: true }
+      },
+      {
         path: 'evaluations',
         name: 'Evaluations',
         component: () => import('@/views/evaluations/EvaluationsView.vue'),
         meta: { title: '评估管理', keepAlive: true }
+      },
+      {
+        path: 'evaluations/new',
+        name: 'EvaluationCreate',
+        component: () => import('@/views/evaluations/EvaluationCreateView.vue'),
+        meta: { title: '新建评估', keepAlive: true }
       },
       {
         path: 'evaluations/:id',

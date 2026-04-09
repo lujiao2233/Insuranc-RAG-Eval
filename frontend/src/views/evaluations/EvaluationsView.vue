@@ -63,7 +63,7 @@
                 size="small"
                 class="fixed-width-btn"
                 :disabled="!row.can_evaluate"
-                @click="openEvaluateDialog(row)"
+                @click="goEvaluationCreatePage(row)"
               >
                 评估
               </el-button>
@@ -112,32 +112,6 @@
       </template>
     </el-dialog>
 
-    <el-dialog v-model="showEvaluateDialog" title="评估配置" width="520px">
-      <el-form ref="evaluateFormRef" :model="evaluateForm" :rules="evaluateRules" label-width="100px">
-        <el-form-item label="测试集">
-          <el-input :model-value="currentTestsetName" disabled />
-        </el-form-item>
-        <el-form-item label="评估方法" prop="evaluation_method">
-          <el-select v-model="evaluateForm.evaluation_method" style="width: 100%">
-            <el-option label="RAGAS官方" value="ragas_official" />
-            <el-option label="DeepEval" value="deepeval" />
-          </el-select>
-        </el-form-item>
-        <el-form-item label="评估指标">
-          <el-checkbox-group v-model="evaluateForm.evaluation_metrics">
-            <el-checkbox value="answer_relevance">答案相关性</el-checkbox>
-            <el-checkbox value="context_relevance">上下文相关性</el-checkbox>
-            <el-checkbox value="faithfulness">忠实度</el-checkbox>
-          </el-checkbox-group>
-        </el-form-item>
-      </el-form>
-      <template #footer>
-        <el-button @click="showEvaluateDialog = false">取消</el-button>
-        <el-button type="primary" :loading="creatingEvaluation" @click="handleCreateEvaluation">
-          开始评估
-        </el-button>
-      </template>
-    </el-dialog>
   </div>
 </template>
 
@@ -147,13 +121,11 @@ import { useRouter } from 'vue-router'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import { Plus } from '@element-plus/icons-vue'
 import { testsetApi } from '@/api/testsets'
-import { useEvaluationStore } from '@/stores/evaluation'
 import { formatDateTime } from '@/utils/format'
 import type { TestSet } from '@/types'
-import type { FormInstance, FormRules, UploadFile } from 'element-plus'
+import type { UploadFile } from 'element-plus'
 
 const router = useRouter()
-const evaluationStore = useEvaluationStore()
 
 const loading = ref(false)
 const testsets = ref<TestSet[]>([])
@@ -167,19 +139,6 @@ const uploadForm = reactive({
   name: '',
   description: ''
 })
-
-const showEvaluateDialog = ref(false)
-const creatingEvaluation = ref(false)
-const currentTestsetId = ref('')
-const currentTestsetName = ref('')
-const evaluateFormRef = ref<FormInstance>()
-const evaluateForm = reactive({
-  evaluation_method: 'ragas_official',
-  evaluation_metrics: ['answer_relevance', 'faithfulness']
-})
-const evaluateRules: FormRules = {
-  evaluation_method: [{ required: true, message: '请选择评估方法', trigger: 'change' }]
-}
 
 const isUploadedTestset = (testset: TestSet) => {
   return testset.generation_method === 'csv_import' || Boolean(testset.metadata?.imported)
@@ -247,36 +206,12 @@ const viewTestset = (id: string) => {
   router.push(`/testsets/${id}`)
 }
 
-const openEvaluateDialog = (testset: TestSet) => {
+const goEvaluationCreatePage = (testset: TestSet) => {
   if (!testset.can_evaluate) {
     ElMessage.warning('该测试集缺少模型答案，暂不可评估')
     return
   }
-  currentTestsetId.value = testset.id
-  currentTestsetName.value = testset.name
-  showEvaluateDialog.value = true
-}
-
-const handleCreateEvaluation = async () => {
-  if (!evaluateFormRef.value || !currentTestsetId.value) return
-  await evaluateFormRef.value.validate(async (valid) => {
-    if (!valid) return
-    creatingEvaluation.value = true
-    try {
-      const result = await evaluationStore.createEvaluation({
-        testset_id: currentTestsetId.value,
-        evaluation_method: evaluateForm.evaluation_method,
-        evaluation_metrics: evaluateForm.evaluation_metrics
-      })
-      ElMessage.success('评估任务已创建')
-      showEvaluateDialog.value = false
-      router.push(`/evaluations/${result.id}`)
-    } catch (error) {
-      ElMessage.error('创建评估失败')
-    } finally {
-      creatingEvaluation.value = false
-    }
-  })
+  router.push(`/evaluations/new?testset_id=${testset.id}`)
 }
 
 const handleExport = async (testset: TestSet) => {

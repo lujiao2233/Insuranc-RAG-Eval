@@ -86,11 +86,6 @@
                   <el-text truncated>{{ row.question }}</el-text>
                 </template>
               </el-table-column>
-              <el-table-column prop="question_type" label="类型" width="100">
-                <template #default="{ row }">
-                  <el-tag size="small">{{ getQuestionTypeText(row.question_type) }}</el-tag>
-                </template>
-              </el-table-column>
               <el-table-column prop="category_major" label="主要分类" width="120">
                 <template #default="{ row }">
                   <el-tag size="small" type="info" v-if="row.category_major">{{ row.category_major }}</el-tag>
@@ -657,7 +652,7 @@ const confirmGenerateQuestions = async () => {
 }
 
 const startEvaluation = () => {
-  router.push(`/evaluations?testset_id=${testset.value?.id}`)
+  router.push(`/evaluations/new?testset_id=${testset.value?.id}`)
 }
 
 const exportTestset = async () => {
