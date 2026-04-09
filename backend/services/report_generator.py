@@ -396,31 +396,31 @@ class ReportGenerator:
         if not overall_metrics:
             return "<p>暂无评估指标数据</p>"
         
-        html = "<table class='metrics-table'>"
-        html += "<thead><tr><th>指标</th><th>平均值</th><th>标准差</th><th>最小值</th><th>最大值</th></tr></thead>"
-        html += "<tbody>"
+        html_output = "<table class='metrics-table'>"
+        html_output += "<thead><tr><th>指标</th><th>平均值</th><th>标准差</th><th>最小值</th><th>最大值</th></tr></thead>"
+        html_output += "<tbody>"
         
         for metric, data in overall_metrics.items():
             if isinstance(data, dict) and "mean" in data and metric not in SAFETY_METRICS:
                 metric_cn = METRIC_NAME_CN.get(metric, metric.replace('_', ' ').title())
-                html += f"<tr>"
-                html += f"<td>{metric_cn}</td>"
-                html += f"<td>{data['mean']:.3f}</td>"
-                html += f"<td>{data.get('std', 0):.3f}</td>"
-                html += f"<td>{data.get('min', 0):.3f}</td>"
-                html += f"<td>{data.get('max', 0):.3f}</td>"
-                html += f"</tr>"
+                html_output += f"<tr>"
+                html_output += f"<td>{metric_cn}</td>"
+                html_output += f"<td>{data['mean']:.3f}</td>"
+                html_output += f"<td>{data.get('std', 0):.3f}</td>"
+                html_output += f"<td>{data.get('min', 0):.3f}</td>"
+                html_output += f"<td>{data.get('max', 0):.3f}</td>"
+                html_output += f"</tr>"
         
         if "overall_score" in overall_metrics:
             score_data = overall_metrics["overall_score"]
-            html += f"<tr style='background-color: #e8f5e8; font-weight: bold;'>"
-            html += f"<td>综合评分</td>"
-            html += f"<td>{score_data['mean']:.3f}</td>"
-            html += f"<td colspan='3'>{score_data.get('interpretation', 'N/A')}</td>"
-            html += f"</tr>"
+            html_output += f"<tr style='background-color: #e8f5e8; font-weight: bold;'>"
+            html_output += f"<td>综合评分</td>"
+            html_output += f"<td>{score_data['mean']:.3f}</td>"
+            html_output += f"<td colspan='3'>{score_data.get('interpretation', 'N/A')}</td>"
+            html_output += f"</tr>"
         
-        html += "</tbody></table>"
-        return html
+        html_output += "</tbody></table>"
+        return html_output
     
     def _generate_results_table(self, evaluation_result: Dict[str, Any]) -> str:
         """生成结果表格HTML"""
@@ -428,7 +428,7 @@ class ReportGenerator:
         if not individual_results:
             return "<p>暂无详细评估结果</p>"
         
-        html = ""
+        html_output = ""
         for i, result in enumerate(individual_results[:50]):
             metrics_scores = result.get('metrics', {})
             
@@ -441,7 +441,7 @@ class ReportGenerator:
             question_text = html.escape(str(result.get("question", "N/A")))
             generated_answer = html.escape(str(result.get("generated_answer", "N/A")))
 
-            html += f"""
+            html_output += f"""
             <div class="result-card">
                 <div class="result-question">问题 {i+1}: {question_text}</div>
                 <div class="result-answer">
@@ -452,7 +452,7 @@ class ReportGenerator:
                 </div>
             </div>
             """
-        return html
+        return html_output
     
     def _get_score_style_class(self, metric: str, score: float) -> str:
         """根据分数获取CSS样式类"""

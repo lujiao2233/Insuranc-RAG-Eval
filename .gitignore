@@ -62,4 +62,4 @@ Thumbs.db
 
 # Data files (uploads, reports)
 /backend/data/uploads/
-/backend/data/reports/
+/backend/data/reports/backend/.deepeval/.deepeval_telemetry.txt

@@ -29,24 +29,14 @@
           v-model="statusFilter"
           placeholder="状态"
           clearable
-          style="width: 120px;"
+          style="width: 140px;"
           @change="handleFilterChange"
         >
           <el-option label="全部" value="" />
+          <el-option label="未分析" value="unanalyzed" />
+          <el-option label="分析中" value="processing" />
           <el-option label="活跃" value="active" />
-          <el-option label="处理中" value="processing" />
           <el-option label="停用" value="inactive" />
-        </el-select>
-        
-        <el-select
-          v-model="analyzedFilter"
-          placeholder="分析状态"
-          clearable
-          style="width: 120px;"
-          @change="handleFilterChange"
-        >
-          <el-option label="已分析" :value="true" />
-          <el-option label="未分析" :value="false" />
         </el-select>
         
         <el-select
@@ -107,13 +97,11 @@
             </el-link>
           </template>
         </el-table-column>
-        <el-table-column prop="file_type" label="类型" width="80" />
-        <el-table-column prop="file_size" label="大小" width="100">
+        <el-table-column prop="page_count" label="页数" width="80">
           <template #default="{ row }">
-            {{ formatFileSize(row.file_size) }}
+            {{ getPageCountText(row) }}
           </template>
         </el-table-column>
-        <el-table-column prop="page_count" label="页数" width="80" />
         <el-table-column prop="category" label="分类" width="120">
           <template #default="{ row }">
             <el-tag :type="getCategoryType(row.category)">
@@ -121,17 +109,10 @@
             </el-tag>
           </template>
         </el-table-column>
-        <el-table-column prop="is_analyzed" label="分析状态" width="100">
-          <template #default="{ row }">
-            <el-tag :type="row.is_analyzed ? 'success' : 'info'">
-              {{ row.is_analyzed ? '已分析' : '未分析' }}
-            </el-tag>
-          </template>
-        </el-table-column>
         <el-table-column prop="status" label="状态" width="100">
           <template #default="{ row }">
-            <el-tag :type="getStatusType(row.status)">
-              {{ getStatusText(row.status) }}
+            <el-tag :type="getStatusType(getUnifiedStatus(row))">
+              {{ getStatusText(getUnifiedStatus(row)) }}
             </el-tag>
           </template>
         </el-table-column>
@@ -155,12 +136,12 @@
               <el-button 
                 type="warning" 
                 size="small"
-                :loading="isAnalyzing[row.id]" 
-                :disabled="row.is_analyzed || isAnalyzing[row.id]"
+                :loading="isAnalyzing[row.id] || row.status === 'processing'" 
+                :disabled="row.is_analyzed || isAnalyzing[row.id] || row.status === 'processing'"
                 @click="analyzeDocument(row)"
                 class="fixed-width-btn"
               >
-                {{ isAnalyzing[row.id] ? '分析中' : (row.is_analyzed ? '已分析' : '分析') }}
+                {{ (isAnalyzing[row.id] || row.status === 'processing') ? '分析中' : (row.is_analyzed ? '已分析' : '分析') }}
               </el-button>
             </div>
             <div class="button-row">
@@ -264,7 +245,7 @@ import { ElMessage, ElMessageBox, ElLoading } from 'element-plus'
 import { Upload, Search, UploadFilled } from '@element-plus/icons-vue'
 import { useDocumentStore } from '@/stores/document'
 import { documentApi } from '@/api/documents'
-import { formatFileSize, formatDateTime } from '@/utils/format'
+import { formatDateTime } from '@/utils/format'
 import type { UploadFile } from 'element-plus'
 import type { Document } from '@/types'
 
@@ -273,7 +254,6 @@ const documentStore = useDocumentStore()
 
 const searchText = ref('')
 const statusFilter = ref('')
-const analyzedFilter = ref<boolean | undefined>(undefined)
 const categoryFilter = ref('')
 const currentPage = ref(1)
 const showUploadDialog = ref(false)
@@ -295,8 +275,8 @@ const startPolling = () => {
     const hasProcessing = documentStore.documents.some(doc => doc.status === 'processing')
     if (hasProcessing) {
       documentStore.fetchDocuments({
-        status: statusFilter.value || undefined,
-        is_analyzed: analyzedFilter.value,
+        status: statusFilter.value === 'unanalyzed' ? 'active' : (statusFilter.value || undefined),
+        is_analyzed: statusFilter.value === 'unanalyzed' ? false : (statusFilter.value === 'active' ? true : undefined),
         category: categoryFilter.value || undefined
       })
     } else {
@@ -324,11 +304,19 @@ watch(() => documentStore.documents, (newDocs) => {
 
 const getStatusType = (status: string) => {
   const types: Record<string, string> = {
+    unanalyzed: 'info',
     active: 'success',
     processing: 'warning',
     inactive: 'danger'
   }
   return types[status] || 'info'
+}
+
+const getUnifiedStatus = (doc: Document): 'unanalyzed' | 'processing' | 'active' | 'inactive' => {
+  if (doc.status === 'processing') return 'processing'
+  if (doc.status === 'inactive') return 'inactive'
+  if (!doc.is_analyzed) return 'unanalyzed'
+  return 'active'
 }
 
 const getCategoryType = (category: string) => {
@@ -345,11 +333,21 @@ const getCategoryType = (category: string) => {
 
 const getStatusText = (status: string) => {
   const texts: Record<string, string> = {
+    unanalyzed: '未分析',
     active: '活跃',
-    processing: '处理中',
+    processing: '分析中',
     inactive: '停用'
   }
   return texts[status] || status
+}
+
+const getPageCountText = (doc: Document) => {
+  if (typeof doc.page_count === 'number' && doc.page_count > 0) {
+    return doc.page_count
+  }
+  const meta = (doc.doc_metadata || {}) as Record<string, any>
+  const fallback = meta.page_count ?? meta.total_pages ?? meta.pages
+  return (typeof fallback === 'number' && fallback > 0) ? fallback : '-'
 }
 
 const handleSearch = () => {
@@ -369,8 +367,8 @@ const handlePageChange = (page: number) => {
 
 const fetchDocuments = () => {
   documentStore.fetchDocuments({
-    status: statusFilter.value || undefined,
-    is_analyzed: analyzedFilter.value,
+    status: statusFilter.value === 'unanalyzed' ? 'active' : (statusFilter.value || undefined),
+    is_analyzed: statusFilter.value === 'unanalyzed' ? false : (statusFilter.value === 'active' ? true : undefined),
     category: categoryFilter.value || undefined
   })
 }

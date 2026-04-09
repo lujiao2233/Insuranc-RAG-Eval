@@ -166,17 +166,24 @@ async def list_evaluations(
     
     total = query.count()
     evaluations = query.order_by(EvaluationModel.timestamp.desc()).offset(skip).limit(limit).all()
+    testset_ids = {e.testset_id for e in evaluations if e.testset_id}
+    testset_name_map = {}
+    if testset_ids:
+        testsets = db.query(TestSet.id, TestSet.name).filter(TestSet.id.in_(testset_ids)).all()
+        testset_name_map = {tid: name for tid, name in testsets}
     
     return {
         "items": [
             {
                 "id": e.id,
                 "testset_id": e.testset_id,
+                "testset_name": testset_name_map.get(e.testset_id, "未知测试集") if e.testset_id else "未知测试集",
                 "evaluation_method": e.evaluation_method,
                 "total_questions": e.total_questions,
                 "evaluated_questions": e.evaluated_questions,
                 "status": e.status,
-                "timestamp": e.timestamp.isoformat() if e.timestamp else None,
+                "timestamp": (e.timestamp or e.created_at).isoformat() if (e.timestamp or e.created_at) else None,
+                "created_at": (e.created_at or e.timestamp).isoformat() if (e.created_at or e.timestamp) else None,
                 "overall_metrics": e.overall_metrics
             }
             for e in evaluations

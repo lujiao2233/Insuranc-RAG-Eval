@@ -104,19 +104,19 @@
             </div>
           </template>
           <el-table :data="recentEvaluations" style="width: 100%">
-            <el-table-column prop="id" label="ID" width="200">
+            <el-table-column prop="testset_name" label="测试集名称" min-width="180">
               <template #default="{ row }">
-                {{ row.id.substring(0, 8) }}...
+                {{ row.testset_name || '未知测试集' }}
               </template>
             </el-table-column>
             <el-table-column prop="status" label="状态" width="100">
               <template #default="{ row }">
-                <el-tag :type="getStatusType(row.status)">{{ row.status }}</el-tag>
+                <el-tag :type="getStatusType(row.status)">{{ getStatusText(row.status) }}</el-tag>
               </template>
             </el-table-column>
             <el-table-column prop="created_at" label="创建时间" width="180">
               <template #default="{ row }">
-                {{ formatDate(row.created_at) }}
+                {{ formatDateTime(row.created_at || row.timestamp) }}
               </template>
             </el-table-column>
           </el-table>
@@ -132,7 +132,7 @@ import { Document, Collection, DataLine, Upload, DocumentCopy } from '@element-p
 import { documentApi } from '@/api/documents'
 import { evaluationApi } from '@/api/evaluations'
 import { testsetApi } from '@/api/testsets'
-import { formatDate } from '@/utils/format'
+import { formatDate, formatDateTime } from '@/utils/format'
 import { useAuthStore } from '@/stores/auth'
 import type { Evaluation, TestSet } from '@/types'
 
@@ -155,6 +155,16 @@ const getStatusType = (status: string) => {
     failed: 'danger'
   }
   return types[status] || 'info'
+}
+
+const getStatusText = (status: string) => {
+  const texts: Record<string, string> = {
+    completed: '已完成',
+    running: '进行中',
+    pending: '待处理',
+    failed: '失败'
+  }
+  return texts[status] || status
 }
 
 const fetchDashboardData = async () => {

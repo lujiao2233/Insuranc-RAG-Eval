@@ -31,7 +31,7 @@
               <el-descriptions-item label="文件名">{{ document.filename }}</el-descriptions-item>
               <el-descriptions-item label="文件类型">{{ document.file_type }}</el-descriptions-item>
               <el-descriptions-item label="文件大小">{{ formatFileSize(document.file_size) }}</el-descriptions-item>
-              <el-descriptions-item label="页数">{{ document.page_count || '-' }}</el-descriptions-item>
+              <el-descriptions-item label="页数">{{ getPageCountDisplay(document) }}</el-descriptions-item>
               <el-descriptions-item label="分析状态">
                 <el-tag :type="document.is_analyzed ? 'success' : 'info'">
                   {{ document.is_analyzed ? '已分析' : '未分析' }}
@@ -56,7 +56,7 @@
                 <el-descriptions-item
                   v-for="(value, key) in document.doc_metadata"
                   :key="key"
-                  :label="key"
+                  :label="getMetadataLabel(key)"
                 >
                   {{ typeof value === 'object' ? JSON.stringify(value) : value }}
                 </el-descriptions-item>
@@ -288,6 +288,30 @@ const truncateText = (text: string, length: number) => {
   return text.substring(0, length) + '...'
 }
 
+const METADATA_LABEL_MAP: Record<string, string> = {
+  _chunking_short_merge_threshold: '短段落合并阈值',
+  _chunking_max_chunk_chars: '切片最大字符数',
+  doc_type: '文档类型',
+  purpose_summary: '用途摘要',
+  page_count: '页数',
+  total_pages: '总页数',
+  pages: '页数'
+}
+
+const getMetadataLabel = (key: string) => METADATA_LABEL_MAP[key] || key
+
+const getPageCountDisplay = (doc: any) => {
+  if (typeof doc?.page_count === 'number' && doc.page_count > 0) {
+    return doc.page_count
+  }
+  const meta = (doc?.doc_metadata || {}) as Record<string, any>
+  const fallback = meta.page_count ?? meta.total_pages ?? meta.pages
+  if (typeof fallback === 'number' && fallback > 0) {
+    return fallback
+  }
+  return '-'
+}
+
 // 任务相关
 const analysisTask = ref<any>(null)
 let timer: any = null
@@ -416,14 +440,21 @@ const handleDownload = async () => {
   
   try {
     const blob = await documentApi.downloadDocument(document.value.id)
+    if (!blob || blob.size === 0) {
+      ElMessage.error('下载失败：文件内容为空')
+      return
+    }
     const url = window.URL.createObjectURL(blob)
     const a = document.createElement('a')
     a.href = url
     a.download = document.value.filename
+    document.body.appendChild(a)
     a.click()
-    window.URL.revokeObjectURL(url)
-  } catch (error) {
-    ElMessage.error('下载失败')
+    document.body.removeChild(a)
+    // 延迟释放，避免浏览器尚未开始下载时 URL 被过早回收
+    setTimeout(() => window.URL.revokeObjectURL(url), 1000)
+  } catch (error: any) {
+    ElMessage.error(error?.response?.data?.detail || '下载失败')
   }
 }
 

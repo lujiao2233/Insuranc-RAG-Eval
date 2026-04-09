@@ -469,7 +469,11 @@ async def download_document(
     
     file_path = Path(document.file_path)
     if not file_path.exists():
-        raise HTTPException(status_code=404, detail="文件不存在")
+        fallback_path = UPLOAD_DIR / document.filename
+        if fallback_path.exists():
+            file_path = fallback_path
+        else:
+            raise HTTPException(status_code=404, detail="文件不存在")
     
     return FileResponse(
         path=file_path,
