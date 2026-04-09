@@ -114,9 +114,26 @@
                   <div class="chunk-meta mt-2">
                     <el-tag size="small" type="info">MD5: {{ row.md5 }}</el-tag>
                     <el-tag size="small" type="warning" class="ml-2">位置: {{ row.start_char }} - {{ row.end_char }}</el-tag>
-                    <el-tag size="small" type="success" class="ml-2" v-if="row.metadata?.knowledge_type">
-                      {{ row.metadata.knowledge_type }}
-                    </el-tag>
+                    <template v-if="row.metadata?.knowledge_type">
+                      <el-tag 
+                        v-if="Array.isArray(row.metadata.knowledge_type)"
+                        v-for="(type, index) in row.metadata.knowledge_type" 
+                        :key="index"
+                        size="small" 
+                        type="success" 
+                        class="ml-2"
+                      >
+                        {{ type }}
+                      </el-tag>
+                      <el-tag 
+                        v-else
+                        size="small" 
+                        type="success" 
+                        class="ml-2"
+                      >
+                        {{ row.metadata.knowledge_type }}
+                      </el-tag>
+                    </template>
                   </div>
                 </template>
               </el-table-column>
@@ -210,7 +227,18 @@
             <el-descriptions-item label="起始字符">{{ selectedChunk.start_char }}</el-descriptions-item>
             <el-descriptions-item label="截止字符">{{ selectedChunk.end_char }}</el-descriptions-item>
             <el-descriptions-item label="知识类型" v-if="selectedChunk.metadata?.knowledge_type">
-              <el-tag size="small" type="success">{{ selectedChunk.metadata.knowledge_type }}</el-tag>
+              <template v-if="Array.isArray(selectedChunk.metadata.knowledge_type)">
+                <el-tag 
+                  v-for="(type, index) in selectedChunk.metadata.knowledge_type" 
+                  :key="index"
+                  size="small" 
+                  type="success"
+                  class="mr-1"
+                >
+                  {{ type }}
+                </el-tag>
+              </template>
+              <el-tag v-else size="small" type="success">{{ selectedChunk.metadata.knowledge_type }}</el-tag>
             </el-descriptions-item>
             <el-descriptions-item label="所在路径" :span="2" v-if="selectedChunk.metadata?.breadcrumb_path">
               {{ selectedChunk.metadata.breadcrumb_path }}
