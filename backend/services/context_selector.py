@@ -88,22 +88,37 @@ class ContextSelector:
         raw = dot / (math.sqrt(na) * math.sqrt(nb))
         return max(0.0, min(1.0, (raw + 1.0) / 2.0))
 
-    def _knowledge_type_similarity(self, t1: str, t2: str) -> float:
-        a = str(t1 or "").strip()
-        b = str(t2 or "").strip()
-        if not a or not b:
+    def _knowledge_type_similarity(self, t1: Any, t2: Any) -> float:
+        # 支持多标签情况下的相似度计算
+        def to_set(val: Any) -> set:
+            if isinstance(val, list):
+                return {str(v).strip() for v in val if str(v).strip()}
+            elif isinstance(val, str):
+                return {val.strip()} if val.strip() else set()
+            return set()
+            
+        set_a = to_set(t1)
+        set_b = to_set(t2)
+        
+        if not set_a or not set_b:
             return 0.2
-        if a == b:
+            
+        # 如果有直接交集，给高分
+        if set_a & set_b:
             return 1.0
+            
         related_groups = [
             {"规则约束", "异常除外", "触发条件"},
             {"流程操作", "触发条件"},
             {"概念定义", "事实陈述"},
             {"数据数值", "规则约束"},
         ]
+        
+        # 只要任意一个标签在同一个 related_group 里，就认为有一定的相似度
         for group in related_groups:
-            if a in group and b in group:
+            if (set_a & group) and (set_b & group):
                 return 0.6
+                
         return 0.2
 
     def _path_similarity(self, p1: str, p2: str) -> float:
@@ -120,11 +135,21 @@ class ContextSelector:
                 break
         return common / max(len(a), len(b))
 
-    def _logic_chain_bonus(self, t1: str, t2: str) -> float:
-        a = str(t1 or "").strip()
-        b = str(t2 or "").strip()
-        if not a or not b:
+    def _logic_chain_bonus(self, t1: Any, t2: Any) -> float:
+        # 支持多标签逻辑链奖励计算
+        def to_set(val: Any) -> set:
+            if isinstance(val, list):
+                return {str(v).strip() for v in val if str(v).strip()}
+            elif isinstance(val, str):
+                return {val.strip()} if val.strip() else set()
+            return set()
+            
+        set_a = to_set(t1)
+        set_b = to_set(t2)
+        
+        if not set_a or not set_b:
             return 0.0
+            
         pairs = {
             ("触发条件", "流程操作"),
             ("规则约束", "流程操作"),
@@ -132,10 +157,17 @@ class ContextSelector:
             ("数据数值", "规则约束"),
             ("概念定义", "规则约束"),
         }
-        if (a, b) in pairs or (b, a) in pairs:
-            return 1.0
-        if a != b:
+        
+        # 检查任意两对标签组合是否在 pairs 中
+        for a_label in set_a:
+            for b_label in set_b:
+                if (a_label, b_label) in pairs or (b_label, a_label) in pairs:
+                    return 1.0
+                    
+        # 只要存在不同的标签就给 0.4
+        if set_a != set_b:
             return 0.4
+            
         return 0.1
 
     def _extract_vector(self, chunk: Dict[str, Any]) -> Optional[List[float]]:

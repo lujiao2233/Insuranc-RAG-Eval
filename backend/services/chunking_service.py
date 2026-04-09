@@ -601,7 +601,7 @@ class ChunkingService:
                     sc_start = current_search_pos
                     current_search_pos += len(sc_text)
                 
-                chunks.append(self._create_chunk_dict(
+                chunks.append(await self._create_chunk_dict(
                     sc_text, sequence_number, sc_start, sc_start + len(sc_text), doc_metadata, seg_info["node"]
                 ))
                 sequence_number += 1
@@ -622,7 +622,7 @@ class ChunkingService:
                 flat.extend(self._flatten_outline(node["children"], level + 1))
         return flat
 
-    def _create_chunk_dict(self, text, seq, start, end, doc_meta, section_meta):
+    async def _create_chunk_dict(self, text, seq, start, end, doc_meta, section_meta):
         md5_input = f"{text}_{start}"
         md5 = hashlib.md5(md5_input.encode('utf-8')).hexdigest()
         safe_doc_meta = {
@@ -630,7 +630,7 @@ class ChunkingService:
             if not str(k).startswith("_chunking_")
         }
         knowledge_type_raw = section_meta.get("knowledge_type")
-        knowledge_type = self._normalize_or_infer_knowledge_type(knowledge_type_raw, text)
+        knowledge_type = await self._normalize_or_infer_knowledge_type(knowledge_type_raw, text, section_meta)
         
         return {
             "content": text,
@@ -652,31 +652,66 @@ class ChunkingService:
             }
         }
 
-    def _normalize_or_infer_knowledge_type(self, value: Any, text: str) -> str:
-        valid = ["概念定义", "规则约束", "流程操作", "数据数值", "触发条件", "事实陈述", "异常除外"]
-        s = str(value or "").strip().replace("[", "").replace("]", "")
-        for v in valid:
-            if s == v or v in s:
-                return v
-        t = str(text or "")
-        # 优先识别规则/流程/条件，避免因条款编号数字误判为“数据数值”
-        if re.search(r"免责|除外|不适用|例外", t):
-            return "异常除外"
-        if re.search(r"如果|若|当|满足|触发|则|导致|方可|才能|即可", t):
-            return "触发条件"
-        if re.search(r"流程|步骤|申请|审核|办理|提交|给付|受理", t):
-            return "流程操作"
-        if re.search(r"定义|释义|是指|术语", t):
-            return "概念定义"
-        if re.search(r"应当|不得|必须|可以|限制|条件|标准", t):
-            return "规则约束"
-        # “数据数值”要求出现真实数值语义，不把条款编号(如 7.13、(1))当作数值知识
-        has_numeric_term = bool(re.search(r"金额|比例|费率|保费|免赔额|上限|下限|起付线|给付比例|计算|统计|合计|总额|年交|月交|日均", t))
-        has_numeric_pattern = bool(re.search(r"\d+(?:\.\d+)?\s*(元|万元|%|％|年|月|日|天|岁|次|份|例|人|项)?", t))
-        only_clause_number = bool(re.fullmatch(r"[\s（()）\d.\-、，,；;：:见第条款项]+", t))
-        if (has_numeric_term and has_numeric_pattern) or (has_numeric_term and not only_clause_number):
-            return "数据数值"
-        return "事实陈述"
+    async def _normalize_or_infer_knowledge_type(self, value: Any, text: str, section_meta: Dict[str, Any]) -> List[str]:
+        valid_types = ["概念定义", "规则约束", "流程操作", "数据数值", "触发条件", "事实陈述", "异常除外"]
+        
+        # 截取合理的文本长度，防止LLM token超限
+        sample_text = str(text or "")[:1500]
+        if not sample_text.strip():
+            return ["事实陈述"]
+            
+        section_title = section_meta.get("title", "")
+        breadcrumb_path = section_meta.get("breadcrumb_path", "")
+        
+        prompt = f"""
+你是一个专业的保险与制度文档知识分类专家。
+请根据以下文本内容及其所在的章节上下文，判断该文本属于哪些知识类型。
+
+可选的知识类型列表：
+{json.dumps(valid_types, ensure_ascii=False)}
+
+文本上下文：
+- 章节标题: {section_title}
+- 章节路径: {breadcrumb_path}
+
+待分类文本内容：
+{sample_text}
+
+要求：
+1. 文本可能同时具备多种知识类型，请返回一个数组，包含所有符合的知识类型。
+2. 如果文本没有明显的上述特征，请返回 ["事实陈述"]。
+3. 请只返回 JSON 数组格式，不要包含任何其他文字。
+
+返回格式示例：
+["触发条件", "规则约束"]
+"""
+        
+        if not self.llm:
+            logger.warning("未配置 LLM，退回默认单标签分类")
+            return ["事实陈述"]
+
+        try:
+            response = await self.llm.generate_text(prompt, max_tokens=100, temperature=0.1)
+            text_response = str(response).strip()
+            
+            # 提取 JSON 数组
+            if "```json" in text_response:
+                text_response = text_response.split("```json")[1].split("```")[0]
+            elif "```" in text_response:
+                text_response = text_response.split("```")[1].split("```")[0]
+                
+            types = json.loads(text_response)
+            
+            if isinstance(types, list) and len(types) > 0:
+                # 过滤出在 valid_types 中的类型
+                filtered_types = [t for t in types if t in valid_types]
+                if filtered_types:
+                    return filtered_types
+            
+            return ["事实陈述"]
+        except Exception as e:
+            logger.error(f"LLM 知识类型分类失败: {e}")
+            return ["事实陈述"]
 
     def _is_complete_sentence_end(self, text: str) -> bool:
         t = str(text or "").strip()
@@ -917,7 +952,7 @@ class ChunkingService:
                 sc_start = current_search_pos
                 current_search_pos += len(sc_text)
                 
-            chunks.append(self._create_chunk_dict(sc_text, i, sc_start, sc_start + len(sc_text), meta, {}))
+            chunks.append(await self._create_chunk_dict(sc_text, i, sc_start, sc_start + len(sc_text), meta, {}))
         if self._should_enforce_text_merge(meta):
             chunks = self._merge_chunk_dicts_document_level(chunks, short_threshold)
             chunks = self._split_chunk_dicts_by_max_chars(chunks, max_chars, short_threshold)
