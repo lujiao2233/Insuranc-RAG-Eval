@@ -31,7 +31,8 @@ async def get_usage_stats(
         module_stats = db.query(
             ApiUsageLog.module_name,
             func.count(ApiUsageLog.id).label("calls"),
-            func.sum(ApiUsageLog.total_tokens).label("tokens")
+            func.sum(ApiUsageLog.total_tokens).label("tokens"),
+            func.avg(ApiUsageLog.latency_ms).label("avg_latency")
         ).group_by(ApiUsageLog.module_name).all()
         
         # 3. 按天分组趋势统计 (最近days天)
@@ -39,7 +40,8 @@ async def get_usage_stats(
         trend_stats = db.query(
             func.date(ApiUsageLog.created_at).label("date"),
             func.count(ApiUsageLog.id).label("calls"),
-            func.sum(ApiUsageLog.total_tokens).label("tokens")
+            func.sum(ApiUsageLog.total_tokens).label("tokens"),
+            func.avg(ApiUsageLog.latency_ms).label("avg_latency")
         ).filter(
             ApiUsageLog.created_at >= start_date
         ).group_by(
@@ -50,12 +52,22 @@ async def get_usage_stats(
         
         # 格式化结果
         modules_data = [
-            {"module": row.module_name, "calls": row.calls, "tokens": row.tokens or 0}
+            {
+                "module": row.module_name, 
+                "calls": row.calls, 
+                "tokens": row.tokens or 0,
+                "avg_latency": round(row.avg_latency or 0)
+            }
             for row in module_stats
         ]
         
         trend_data = [
-            {"date": str(row.date), "calls": row.calls, "tokens": row.tokens or 0}
+            {
+                "date": str(row.date), 
+                "calls": row.calls, 
+                "tokens": row.tokens or 0,
+                "avg_latency": round(row.avg_latency or 0)
+            }
             for row in trend_stats
         ]
         

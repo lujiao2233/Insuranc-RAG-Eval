@@ -499,6 +499,8 @@ class RagasEvaluator:
                 return self.client
 
             def generate(self, prompt: str) -> str:
+                import time
+                start_time = time.time()
                 client = self.load_model()
                 completion = client.chat.completions.create(
                     model=self.model,
@@ -509,6 +511,7 @@ class RagasEvaluator:
                     temperature=self.temperature,
                     max_tokens=self.max_tokens,
                 )
+                latency_ms = int((time.time() - start_time) * 1000)
                 if completion and completion.choices:
                     content = completion.choices[0].message.content or ""
                     # 记录Token使用情况
@@ -524,7 +527,7 @@ class RagasEvaluator:
                             # 使用线程异步记录
                             threading.Thread(
                                 target=log_token_usage,
-                                args=("evaluation", self.model, usage_dict),
+                                args=("evaluation", self.model, usage_dict, latency_ms),
                                 daemon=True
                             ).start()
                         except Exception as e:

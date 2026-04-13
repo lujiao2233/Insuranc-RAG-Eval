@@ -1,7 +1,7 @@
 <template>
   <div class="dashboard-view">
     <el-row :gutter="20" class="stats-row">
-      <el-col :xs="24" :sm="12" :md="6">
+      <el-col :xs="24" :sm="12" :md="4">
         <el-card class="stat-card">
           <div class="stat-content">
             <div class="stat-icon" style="background: #409eff;">
@@ -15,7 +15,7 @@
         </el-card>
       </el-col>
       
-      <el-col :xs="24" :sm="12" :md="6">
+      <el-col :xs="24" :sm="12" :md="4">
         <el-card class="stat-card">
           <div class="stat-content">
             <div class="stat-icon" style="background: #67c23a;">
@@ -29,7 +29,7 @@
         </el-card>
       </el-col>
       
-      <el-col :xs="24" :sm="12" :md="6">
+      <el-col :xs="24" :sm="12" :md="4">
         <el-card class="stat-card">
           <div class="stat-content">
             <div class="stat-icon" style="background: #e6a23c;">
@@ -43,7 +43,7 @@
         </el-card>
       </el-col>
 
-      <el-col :xs="24" :sm="12" :md="6">
+      <el-col :xs="24" :sm="12" :md="4">
         <el-card class="stat-card">
           <div class="stat-content">
             <div class="stat-icon" style="background: #9c27b0;">
@@ -51,7 +51,35 @@
             </div>
             <div class="stat-info">
               <div class="stat-value">{{ stats.totalTokens }}</div>
-              <div class="stat-label">消耗 Token 数</div>
+              <div class="stat-label">消耗 Token</div>
+            </div>
+          </div>
+        </el-card>
+      </el-col>
+
+      <el-col :xs="24" :sm="12" :md="4">
+        <el-card class="stat-card">
+          <div class="stat-content">
+            <div class="stat-icon" style="background: #f56c6c;">
+              <el-icon :size="24"><Cpu /></el-icon>
+            </div>
+            <div class="stat-info">
+              <div class="stat-value">{{ stats.totalCalls }}</div>
+              <div class="stat-label">API 调用次数</div>
+            </div>
+          </div>
+        </el-card>
+      </el-col>
+
+      <el-col :xs="24" :sm="12" :md="4">
+        <el-card class="stat-card">
+          <div class="stat-content">
+            <div class="stat-icon" style="background: #00bcd4;">
+              <el-icon :size="24"><Timer /></el-icon>
+            </div>
+            <div class="stat-info">
+              <div class="stat-value">{{ stats.avgLatency }} ms</div>
+              <div class="stat-label">平均耗时</div>
             </div>
           </div>
         </el-card>
@@ -142,7 +170,7 @@
 
 <script setup lang="ts">
 import { ref, onMounted } from 'vue'
-import { Document, Collection, DataLine, Upload, DocumentCopy, Coin } from '@element-plus/icons-vue'
+import { Document, Collection, DataLine, Upload, DocumentCopy, Coin, Timer, Cpu } from '@element-plus/icons-vue'
 import { documentApi } from '@/api/documents'
 import { evaluationApi } from '@/api/evaluations'
 import { testsetApi } from '@/api/testsets'
@@ -157,7 +185,9 @@ const stats = ref({
   totalDocuments: 0,
   totalTestsets: 0,
   totalEvaluations: 0,
-  totalTokens: 0
+  totalTokens: 0,
+  totalCalls: 0,
+  avgLatency: 0
 })
 
 const recentTestsets = ref<TestSet[]>([])
@@ -220,8 +250,21 @@ const fetchDashboardData = async () => {
     
     if (usageRes.status === 'fulfilled') {
       stats.value.totalTokens = usageRes.value.data?.summary?.total_tokens || 0
+      stats.value.totalCalls = usageRes.value.data?.summary?.total_calls || 0
+      
+      // Calculate overall average latency from module stats
+      const modules = usageRes.value.data?.modules || []
+      if (modules.length > 0) {
+        const totalCalls = modules.reduce((sum, m) => sum + m.calls, 0)
+        const totalWeightedLatency = modules.reduce((sum, m) => sum + (m.avg_latency * m.calls), 0)
+        stats.value.avgLatency = totalCalls > 0 ? Math.round(totalWeightedLatency / totalCalls) : 0
+      } else {
+        stats.value.avgLatency = 0
+      }
     } else {
       stats.value.totalTokens = 0
+      stats.value.totalCalls = 0
+      stats.value.avgLatency = 0
     }
     
   } catch (error) {

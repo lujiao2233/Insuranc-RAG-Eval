@@ -9,11 +9,13 @@ export interface UsageStats {
     module: string
     calls: number
     tokens: number
+    avg_latency: number
   }>
   trend: Array<{
     date: string
     calls: number
     tokens: number
+    avg_latency: number
   }>
 }
 
