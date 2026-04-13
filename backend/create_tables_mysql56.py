@@ -75,7 +75,7 @@ CREATE TABLE IF NOT EXISTS document_chunks (
     ('testsets', '''
 CREATE TABLE IF NOT EXISTS testsets (
   id char(36) NOT NULL,
-  document_id char(36) NOT NULL,
+  document_id char(36) DEFAULT NULL,
   user_id char(36) DEFAULT NULL,
   name varchar(255) NOT NULL,
   description text DEFAULT NULL,

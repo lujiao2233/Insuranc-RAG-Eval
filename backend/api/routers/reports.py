@@ -16,6 +16,7 @@ from models.database import TestSet
 from services.report_generator import report_generator
 
 router = APIRouter()
+EXECUTION_EVAL_METHOD = "testset_execution"
 
 
 @router.get("/")
@@ -28,7 +29,8 @@ async def list_reports(
     """获取报告列表（已完成评估的列表）"""
     query = db.query(EvaluationModel).filter(
         EvaluationModel.user_id == current_user.id,
-        EvaluationModel.status == "completed"
+        EvaluationModel.status == "completed",
+        EvaluationModel.evaluation_method != EXECUTION_EVAL_METHOD
     )
     
     total = query.count()
@@ -37,6 +39,9 @@ async def list_reports(
     reports = []
     for e in evaluations:
         testset = db.query(TestSet).filter(TestSet.id == e.testset_id).first()
+        testset_meta = testset.testset_metadata if (testset and isinstance(testset.testset_metadata, dict)) else {}
+        if testset_meta.get("lifecycle_stage") != "report":
+            continue
         reports.append({
             "evaluation_id": e.id,
             "testset_name": testset.name if testset else "未知测试集",
@@ -53,7 +58,7 @@ async def list_reports(
     
     return {
         "items": reports,
-        "total": total,
+        "total": len(reports),
         "skip": skip,
         "limit": limit
     }

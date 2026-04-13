@@ -2,7 +2,7 @@ import { request } from './index'
 import type { TestSet, Question, PaginatedResponse } from '@/types'
 
 export const testsetApi = {
-  getTestSets(params?: { skip?: number; limit?: number; document_id?: string }): Promise<PaginatedResponse<TestSet>> {
+  getTestSets(params?: { skip?: number; limit?: number; document_id?: string; stage?: 'base' | 'evaluation' | 'report' }): Promise<PaginatedResponse<TestSet>> {
     return request.get('/testsets/', params)
   },
 
@@ -15,6 +15,7 @@ export const testsetApi = {
     name: string
     description?: string
     generation_method?: string
+    metadata?: Record<string, any>
   }): Promise<TestSet> {
     return request.post('/testsets/', data)
   },
@@ -49,12 +50,20 @@ export const testsetApi = {
 
   generateQuestions(testsetId: string, params: {
     num_questions?: number
-    question_types?: string
+    question_types?: string | string[]
     generation_mode?: 'advanced'
     enable_safety_robustness?: boolean
     multi_doc_ratio?: number
-  }): Promise<{ message: string; questions: Question[]; generation_mode: string }> {
-    return request.post(`/testsets/${testsetId}/generate`, params)
+    document_ids?: string[]
+    persona_list?: Array<Record<string, any>>
+  }): Promise<{ task_id: string; message: string }> {
+    const normalizedParams = {
+      ...params,
+      question_types: Array.isArray(params.question_types)
+        ? params.question_types.join(',')
+        : params.question_types
+    }
+    return request.post(`/testsets/${testsetId}/generate`, normalizedParams)
   },
 
   generateQuestionsAsync(testsetId: string, params: {
@@ -84,9 +93,9 @@ export const testsetApi = {
 
   generateAdvancedQuestions(testsetId: string, params: {
     num_questions?: number
-    question_types?: string
-  }): Promise<{ message: string; questions: Question[]; generation_mode: string }> {
-    return request.post(`/testsets/${testsetId}/generate`, {
+    question_types?: string | string[]
+  }): Promise<{ task_id: string; message: string }> {
+    return this.generateQuestions(testsetId, {
       ...params,
       generation_mode: 'advanced'
     })
@@ -131,6 +140,6 @@ export const testsetApi = {
   },
 
   startExecution(testsetId: string, data: { mobile: string; verify_code: string; bot_id: string }) {
-    return request.post<{ task_id: string; message: string }>(`/testsets/${testsetId}/execution/start`, data)
+    return request.post<{ task_id: string; message: string; execution_testset_id?: string }>(`/testsets/${testsetId}/execution/start`, data)
   }
 }

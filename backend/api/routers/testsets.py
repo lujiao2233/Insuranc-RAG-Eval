@@ -28,6 +28,7 @@ from utils.logger import get_logger
 logger = get_logger("testsets_router")
 
 router = APIRouter()
+EXECUTION_EVAL_METHOD = "testset_execution"
 
 _VALID_MAJOR_MINOR = {
     (str(item.get("major") or "").strip(), str(minor or "").strip())
@@ -124,6 +125,117 @@ def _build_question_metadata(question_payload: Dict[str, Any]) -> Dict[str, Any]
     return meta
 
 
+def _get_latest_execution_evaluation(db: Session, testset_id: str) -> Optional[EvaluationModel]:
+    return db.query(EvaluationModel).filter(
+        EvaluationModel.testset_id == testset_id,
+        EvaluationModel.status == "completed",
+        EvaluationModel.evaluation_method == EXECUTION_EVAL_METHOD
+    ).order_by(EvaluationModel.timestamp.desc()).first()
+
+
+def _get_execution_answers_map(db: Session, testset_id: str) -> Dict[str, EvaluationResultModel]:
+    latest_execution = _get_latest_execution_evaluation(db, testset_id)
+    if not latest_execution:
+        return {}
+    rows = db.query(EvaluationResultModel).filter(
+        EvaluationResultModel.evaluation_id == latest_execution.id,
+        EvaluationResultModel.question_id.isnot(None)
+    ).all()
+    return {str(row.question_id): row for row in rows if row.question_id}
+
+
+def _get_lifecycle_stage(testset: TestSetModel) -> str:
+    meta = testset.testset_metadata if isinstance(testset.testset_metadata, dict) else {}
+    stage = str(meta.get("lifecycle_stage") or "").strip().lower()
+    if stage in {"base", "evaluation", "report"}:
+        return stage
+    if testset.generation_method == "csv_import":
+        return "evaluation"
+    return "base"
+
+
+def _short_display_name(name: str, max_len: int = 24) -> str:
+    text = str(name or "").strip()
+    if not text:
+        return "测试集"
+    return text if len(text) <= max_len else f"{text[:max_len]}..."
+
+
+def _resolve_root_info(testset: TestSetModel) -> Dict[str, str]:
+    meta = testset.testset_metadata if isinstance(testset.testset_metadata, dict) else {}
+    root_testset_id = str(meta.get("root_testset_id") or testset.id)
+    root_name = str(meta.get("root_name") or testset.name or "测试集")
+    return {"root_testset_id": root_testset_id, "root_name": root_name}
+
+
+def _next_execution_no(db: Session, user_id: str, root_testset_id: str) -> int:
+    all_sets = db.query(TestSetModel).filter(TestSetModel.user_id == user_id).all()
+    max_no = 0
+    for item in all_sets:
+        if _get_lifecycle_stage(item) != "evaluation":
+            continue
+        meta = item.testset_metadata if isinstance(item.testset_metadata, dict) else {}
+        if str(meta.get("root_testset_id") or "") != root_testset_id:
+            continue
+        current_no = int(meta.get("execution_no") or 0)
+        if current_no > max_no:
+            max_no = current_no
+    return max_no + 1
+
+
+def _clone_testset_with_questions(
+    db: Session,
+    source_testset: TestSetModel,
+    *,
+    user_id: str,
+    stage: str,
+    clone_name: str,
+    extra_metadata: Optional[Dict[str, Any]] = None
+) -> TestSetModel:
+    source_meta = source_testset.testset_metadata if isinstance(source_testset.testset_metadata, dict) else {}
+    new_meta: Dict[str, Any] = {
+        **source_meta,
+        "lifecycle_stage": stage,
+        "source_testset_id": str(source_testset.id)
+    }
+    if extra_metadata:
+        new_meta.update(extra_metadata)
+
+    cloned = TestSetModel(
+        id=str(uuid.uuid4()),
+        user_id=user_id,
+        document_id=source_testset.document_id,
+        name=clone_name,
+        description=source_testset.description,
+        question_count=source_testset.question_count,
+        question_types=source_testset.question_types,
+        generation_method=source_testset.generation_method or "qwen_model",
+        file_path=source_testset.file_path,
+        testset_metadata=new_meta
+    )
+    db.add(cloned)
+    db.flush()
+
+    source_questions = db.query(Question).filter(Question.testset_id == str(source_testset.id)).all()
+    for q in source_questions:
+        question_meta = q.question_metadata if isinstance(q.question_metadata, dict) else q.question_metadata
+        cloned_q = Question(
+            id=str(uuid.uuid4()),
+            testset_id=cloned.id,
+            question=q.question,
+            question_type=q.question_type,
+            category_major=q.category_major,
+            category_minor=q.category_minor,
+            expected_answer=q.expected_answer,
+            answer=None,
+            context=q.context,
+            question_metadata=question_meta
+        )
+        db.add(cloned_q)
+
+    return cloned
+
+
 def _ensure_generation_model_available(db: Session, user_id: str) -> None:
     cs = ConfigService(db)
     result = cs.test_api_connection(user_id, service="qwen")
@@ -137,6 +249,7 @@ async def list_testsets(
     skip: int = 0,
     limit: int = 100,
     document_id: Optional[UUID] = None,
+    stage: Optional[str] = Query(None, description="base|evaluation|report"),
     current_user: User = Depends(get_current_active_user),
     db: Session = Depends(get_db)
 ):
@@ -146,25 +259,34 @@ async def list_testsets(
     if document_id:
         query = query.filter(TestSetModel.document_id == str(document_id))
     
-    total = query.count()
-    testsets = query.order_by(TestSetModel.create_time.desc()).offset(skip).limit(limit).all()
+    all_testsets = query.order_by(TestSetModel.create_time.desc()).all()
+    if stage:
+        stage_key = str(stage).strip().lower()
+        all_testsets = [t for t in all_testsets if _get_lifecycle_stage(t) == stage_key]
+    total = len(all_testsets)
+    testsets = all_testsets[skip: skip + limit]
     
     items = []
     for t in testsets:
-        answered_questions = db.query(Question).filter(
-            Question.testset_id == t.id,
-            Question.answer.isnot(None),
-            Question.answer != ""
-        ).count()
+        latest_execution = _get_latest_execution_evaluation(db, str(t.id))
+        answered_questions = 0
+        if latest_execution:
+            answered_questions = db.query(EvaluationResultModel).filter(
+                EvaluationResultModel.evaluation_id == latest_execution.id,
+                EvaluationResultModel.generated_answer.isnot(None),
+                EvaluationResultModel.generated_answer != ""
+            ).count()
+        else:
+            # 兼容历史数据：旧版本会直接把模型答案写到 questions.answer
+            answered_questions = db.query(Question).filter(
+                Question.testset_id == t.id,
+                Question.answer.isnot(None),
+                Question.answer != ""
+            ).count()
         total_questions = t.question_count or 0
         can_evaluate = total_questions > 0 and answered_questions >= total_questions
 
-        latest_eval = db.query(EvaluationModel).filter(
-            EvaluationModel.testset_id == str(t.id),
-            EvaluationModel.status == 'completed'
-        ).order_by(EvaluationModel.timestamp.desc()).first()
-
-        is_evaluated = latest_eval is not None
+        is_evaluated = latest_execution is not None
         if is_evaluated:
             eval_status = "evaluated"
         elif can_evaluate:
@@ -181,6 +303,7 @@ async def list_testsets(
             "answered_questions": answered_questions,
             "can_evaluate": can_evaluate,
             "eval_status": eval_status,
+            "latest_evaluation_id": str(latest_execution.id) if latest_execution else None,
             "question_types": t.question_types,
             "generation_method": t.generation_method,
             "create_time": t.create_time.isoformat() if t.create_time else None,
@@ -308,6 +431,7 @@ async def import_testset_csv(
         file_path=filename,
         testset_metadata={
             "imported": True,
+            "lifecycle_stage": "evaluation",
             "source_file": filename,
             "has_model_answers": answered_count == len(parsed_questions),
             "answered_questions": answered_count
@@ -363,6 +487,7 @@ async def get_testset(
         raise HTTPException(status_code=404, detail="测试集不存在")
     
     questions = db.query(Question).filter(Question.testset_id == str(testset_id)).all()
+    execution_answers = _get_execution_answers_map(db, str(testset_id))
     
     return {
         "id": testset.id,
@@ -372,6 +497,7 @@ async def get_testset(
         "question_count": testset.question_count,
         "question_types": testset.question_types,
         "generation_method": testset.generation_method,
+        "metadata": testset.testset_metadata,
         "create_time": testset.create_time.isoformat() if testset.create_time else None,
         "file_path": testset.file_path,
         "questions": [
@@ -382,6 +508,7 @@ async def get_testset(
                 "category_major": _normalize_question_category(q.question_type, q.category_major, q.category_minor)[1],
                 "category_minor": _normalize_question_category(q.question_type, q.category_major, q.category_minor)[2],
                 "expected_answer": q.expected_answer,
+                "answer": execution_answers.get(str(q.id)).generated_answer if execution_answers.get(str(q.id)) else q.answer,
                 "context": q.context
             }
             for q in questions
@@ -408,7 +535,10 @@ async def create_testset(
         description=testset_data.description,
         question_count=0,
         generation_method=testset_data.generation_method or "qwen_model",
-        testset_metadata=testset_data.metadata if hasattr(testset_data, 'metadata') else None
+        testset_metadata={
+            **(testset_data.metadata if hasattr(testset_data, "metadata") and isinstance(testset_data.metadata, dict) else {}),
+            "lifecycle_stage": "base"
+        }
     )
     
     db.add(testset)
@@ -473,11 +603,32 @@ async def delete_testset(
     
     if not testset:
         raise HTTPException(status_code=404, detail="测试集不存在")
-    
-    db.query(Question).filter(Question.testset_id == str(testset_id)).delete()
-    
-    db.delete(testset)
-    db.commit()
+
+    try:
+        question_ids = [
+            qid for (qid,) in db.query(Question.id).filter(
+                Question.testset_id == str(testset_id)
+            ).all()
+        ]
+
+        if question_ids:
+            # 兼容旧外键约束：先解绑评估结果对问题的引用，再删除问题
+            db.query(EvaluationResultModel).filter(
+                EvaluationResultModel.question_id.in_(question_ids)
+            ).update(
+                {EvaluationResultModel.question_id: None},
+                synchronize_session=False
+            )
+
+            db.query(Question).filter(Question.id.in_(question_ids)).delete(
+                synchronize_session=False
+            )
+
+        db.delete(testset)
+        db.commit()
+    except Exception as e:
+        db.rollback()
+        raise HTTPException(status_code=500, detail=f"删除测试集失败: {str(e)}")
     
     return {"message": "测试集已删除", "id": str(testset_id)}
 
@@ -503,6 +654,7 @@ async def get_testset_questions(
     questions = db.query(Question).filter(
         Question.testset_id == str(testset_id)
     ).offset(skip).limit(limit).all()
+    execution_answers = _get_execution_answers_map(db, str(testset_id))
     
     return {
         "testset_id": str(testset_id),
@@ -515,7 +667,7 @@ async def get_testset_questions(
                 "category_major": _normalize_question_category(q.question_type, q.category_major, q.category_minor)[1],
                 "category_minor": _normalize_question_category(q.question_type, q.category_major, q.category_minor)[2],
                 "expected_answer": q.expected_answer,
-                "answer": q.answer,
+                "answer": execution_answers.get(str(q.id)).generated_answer if execution_answers.get(str(q.id)) else q.answer,
                 "context": q.context
             }
             for q in questions
@@ -541,6 +693,68 @@ class ExecuteTestsetRequest(BaseModel):
     mobile: str
     verify_code: str
     bot_id: str
+
+
+def _submit_generation_task(
+    testset_id: UUID,
+    request: GenerateQuestionsRequest,
+    current_user: User,
+    db: Session
+):
+    """统一提交问题生成任务（单一任务链路）"""
+    testset = db.query(TestSetModel).filter(
+        TestSetModel.id == str(testset_id),
+        TestSetModel.user_id == current_user.id
+    ).first()
+
+    if not testset:
+        raise HTTPException(status_code=404, detail="测试集不存在")
+
+    request_doc_ids = [str(doc_id) for doc_id in request.document_ids] if request.document_ids else []
+    target_doc_ids = []
+    if testset.document_id:
+        target_doc_ids.append(str(testset.document_id))
+    for doc_id in request_doc_ids:
+        if doc_id and doc_id not in target_doc_ids:
+            target_doc_ids.append(doc_id)
+
+    if not target_doc_ids:
+        raise HTTPException(status_code=400, detail="测试集未关联可用文档，请先指定 document_ids")
+
+    _ensure_generation_model_available(db, str(current_user.id))
+
+    task_id = task_manager.create_task(
+        task_type="generate_questions",
+        params={
+            "testset_id": str(testset_id),
+            "num_questions": request.num_questions,
+            "generation_mode": request.generation_mode,
+            "document_ids": request_doc_ids or None
+        }
+    )
+
+    thread = threading.Thread(
+        target=_run_generation_task,
+        args=(
+            task_id,
+            str(testset_id),
+            str(current_user.id),
+            request.num_questions,
+            request.question_types,
+            request.generation_mode,
+            request.enable_safety_robustness,
+            request.multi_doc_ratio,
+            request_doc_ids or None,
+            request.persona_list
+        ),
+        daemon=True
+    )
+    thread.start()
+
+    return {
+        "task_id": task_id,
+        "message": "任务已创建，请轮询状态接口获取进度"
+    }
 
 
 def _run_generation_task(
@@ -720,52 +934,7 @@ async def generate_questions_async(
     db: Session = Depends(get_db)
 ):
     """异步生成测试问题 - 返回任务ID，前端轮询状态"""
-    testset = db.query(TestSetModel).filter(
-        TestSetModel.id == str(testset_id),
-        TestSetModel.user_id == current_user.id
-    ).first()
-    
-    if not testset:
-        raise HTTPException(status_code=404, detail="测试集不存在")
-    
-    document = db.query(Document).filter(Document.id == testset.document_id).first()
-    if not document:
-        raise HTTPException(status_code=404, detail="关联文档不存在")
-
-    _ensure_generation_model_available(db, str(current_user.id))
-    
-    task_id = task_manager.create_task(
-        task_type="generate_questions",
-        params={
-            "testset_id": str(testset_id),
-            "num_questions": request.num_questions,
-            "generation_mode": request.generation_mode,
-            "document_ids": [str(doc_id) for doc_id in request.document_ids] if request.document_ids else None
-        }
-    )
-    
-    thread = threading.Thread(
-        target=_run_generation_task,
-        args=(
-            task_id,
-            str(testset_id),
-            str(current_user.id),
-            request.num_questions,
-            request.question_types,
-            request.generation_mode,
-            request.enable_safety_robustness,
-            request.multi_doc_ratio,
-            [str(doc_id) for doc_id in request.document_ids] if request.document_ids else None,
-            request.persona_list
-        ),
-        daemon=True
-    )
-    thread.start()
-    
-    return {
-        "task_id": task_id,
-        "message": "任务已创建，请轮询状态接口获取进度"
-    }
+    return _submit_generation_task(testset_id, request, current_user, db)
 
 
 @router.get("/tasks/{task_id}")
@@ -787,128 +956,8 @@ async def generate_questions(
     current_user: User = Depends(get_current_active_user),
     db: Session = Depends(get_db)
 ):
-    """生成测试问题"""
-    num_questions = request.num_questions
-    question_types = request.question_types
-    generation_mode = request.generation_mode
-    enable_safety_robustness = request.enable_safety_robustness
-    multi_doc_ratio = request.multi_doc_ratio
-
-    testset = db.query(TestSetModel).filter(
-        TestSetModel.id == str(testset_id),
-        TestSetModel.user_id == current_user.id
-    ).first()
-    
-    if not testset:
-        raise HTTPException(status_code=404, detail="测试集不存在")
-    
-    document = db.query(Document).filter(Document.id == testset.document_id).first()
-    if not document:
-        raise HTTPException(status_code=404, detail="关联文档不存在")
-
-    _ensure_generation_model_available(db, str(current_user.id))
-    
-    if not document.is_analyzed:
-        raise HTTPException(status_code=400, detail="文档尚未分析，请先分析文档")
-    
-    from models.database import DocumentChunk as ChunkModel
-    chunks = db.query(ChunkModel).filter(ChunkModel.document_id == document.id).order_by(ChunkModel.sequence_number.asc()).all()
-    
-    if not chunks:
-        raise HTTPException(status_code=400, detail="文档缺少切片数据，请重新分析后再生成测试集")
-
-    content_data = [{
-        "content": c.content,
-        "doc_id": str(document.id),
-        "filename": document.filename,
-        "chunk_id": str(c.id),
-        "metadata": c.chunk_metadata or {},
-        "sequence_number": c.sequence_number,
-        "start_char": c.start_char,
-        "end_char": c.end_char
-    } for c in chunks]
-    logger.info(f"使用文档切片数据，共 {len(content_data)} 个切片")
-    
-    types_list = None
-    if question_types:
-        types_list = [t.strip() for t in question_types.split(",")]
-    
-    try:
-        generator = get_question_generator()
-        created_questions = []
-        
-        generation_mode = "advanced"
-        if generation_mode == "advanced":
-            params = {
-                "testset_size": num_questions,
-                "enable_safety_robustness": enable_safety_robustness,
-                "generation_mode": "qwen_llm",
-                "multi_doc_ratio": multi_doc_ratio,
-                "language": "chinese",
-                "persona_list": [],
-                "question_types": types_list,
-                "user_id": str(current_user.id)
-            }
-            
-            generated_questions = await generator.generate_advanced_questions(
-                content_data,
-                params
-            )
-            
-            questions_list = generated_questions.get("questions", []) if isinstance(generated_questions, dict) else generated_questions
-            
-            for q in questions_list:
-                if len(created_questions) >= num_questions:
-                    break
-                    
-                normalized_type, normalized_major, normalized_minor = _normalize_question_category(
-                    q.get("question_type"),
-                    q.get("category_major"),
-                    q.get("category_minor")
-                )
-                question_metadata = _build_question_metadata(q)
-                question = Question(
-                    id=str(uuid.uuid4()),
-                    testset_id=str(testset_id),
-                    question=q.get("question", ""),
-                    question_type=normalized_type,
-                    expected_answer=q.get("expected_answer", ""),
-                    context=q.get("context", ""),
-                    question_metadata=question_metadata or None,
-                    category_major=normalized_major,
-                    category_minor=normalized_minor
-                )
-                db.add(question)
-                created_questions.append({
-                    "id": question.id,
-                    "question": question.question,
-                    "question_type": question.question_type,
-                    "expected_answer": question.expected_answer,
-                    "context": question.context,
-                    "metadata": question_metadata
-                })
-        
-        testset.question_count = len(created_questions)
-        db.commit()
-        
-        if len(created_questions) == 0:
-            raise HTTPException(
-                status_code=500, 
-                detail="未能生成任何问题，请检查LLM配置是否正确（DASHSCOPE_API_KEY或QWEN_API_KEY）"
-            )
-        
-        return {
-            "message": f"成功生成 {len(created_questions)} 个问题",
-            "questions": created_questions,
-            "generation_mode": generation_mode,
-            "enable_safety_robustness": enable_safety_robustness,
-            "multi_doc_ratio": multi_doc_ratio
-        }
-        
-    except HTTPException:
-        raise
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=f"生成问题失败: {str(e)}")
+    """生成测试问题（已统一为异步任务链路）"""
+    return _submit_generation_task(testset_id, request, current_user, db)
 
 
 @router.post("/{testset_id}/questions")
@@ -1253,6 +1302,7 @@ async def send_execution_verify_code(
 
 def _run_execution_task(
     task_id: str,
+    execution_evaluation_id: str,
     testset_id: str,
     user_id: str,
     mobile: str,
@@ -1264,15 +1314,23 @@ def _run_execution_task(
     try:
         task_manager.update_status(task_id, "running")
         task_manager.append_log(task_id, f"正在初始化API客户端 (手机号: {mobile}, BOT_ID: {bot_id})...")
+        started_at = datetime.now()
         
         testset = db.query(TestSetModel).filter(
             TestSetModel.id == testset_id,
             TestSetModel.user_id == user_id
         ).first()
+        execution_eval = db.query(EvaluationModel).filter(
+            EvaluationModel.id == execution_evaluation_id,
+            EvaluationModel.user_id == user_id
+        ).first()
         
-        if not testset:
+        if not testset or not execution_eval:
             task_manager.fail_task(task_id, "测试集不存在")
             return
+        
+        execution_eval.status = "running"
+        db.commit()
             
         client = TalkApiClient(mobile=mobile, bot_id=bot_id)
         
@@ -1291,12 +1349,8 @@ def _run_execution_task(
             task_manager.fail_task(task_id, "该测试集没有问题，无法执行")
             return
             
-        # 过滤出尚未回答的问题或者全部重新执行
-        questions_to_execute = [q for q in questions if not q.answer]
-        if not questions_to_execute:
-            task_manager.append_log(task_id, "所有问题均已回答，将重新执行获取答案")
-            questions_to_execute = questions
-            
+        # 每次执行都生成独立结果，不写回问题本体
+        questions_to_execute = questions
         total = len(questions_to_execute)
         task_manager.append_log(task_id, f"开始处理，共 {total} 个问题...")
         
@@ -1309,11 +1363,25 @@ def _run_execution_task(
                     q.question, listen_seconds=120.0, max_retries=1
                 )
                 
-                q.answer = answer
-                
-                if isinstance(q.question_metadata, dict):
-                    q.question_metadata["refs"] = refs
-                    q.question_metadata["status"] = status
+                result_row = db.query(EvaluationResultModel).filter(
+                    EvaluationResultModel.evaluation_id == execution_evaluation_id,
+                    EvaluationResultModel.question_id == q.id
+                ).first()
+                if not result_row:
+                    result_row = EvaluationResultModel(
+                        evaluation_id=execution_evaluation_id,
+                        question_id=q.id,
+                        question_text=q.question or "",
+                        expected_answer=q.expected_answer or "",
+                        context=q.context or ""
+                    )
+                    db.add(result_row)
+                result_row.generated_answer = answer or ""
+                result_row.context = q.context or ""
+                result_row.reasons = {
+                    "execution_status": status,
+                    "refs": refs
+                }
                     
                 db.commit()
                 task_manager.append_log(task_id, f"收到回答 [{idx + 1}/{total}] (状态: {status})")
@@ -1323,14 +1391,30 @@ def _run_execution_task(
                 db.rollback()
         
         task_manager.update_progress(task_id, 1.0, "执行完成")
+        execution_eval.status = "completed"
+        execution_eval.total_questions = total
+        execution_eval.evaluated_questions = total
+        execution_eval.evaluation_time = int((datetime.now() - started_at).total_seconds())
+        execution_eval.timestamp = datetime.now()
+        db.commit()
         task_manager.finish_task(
             task_id,
-            result={"processed_count": total},
+            result={"processed_count": total, "execution_evaluation_id": execution_evaluation_id},
             message=f"测试集执行完成，共处理 {total} 个问题"
         )
         task_manager.append_log(task_id, "所有问题处理完毕")
         
     except Exception as e:
+        try:
+            execution_eval = db.query(EvaluationModel).filter(
+                EvaluationModel.id == execution_evaluation_id
+            ).first()
+            if execution_eval:
+                execution_eval.status = "failed"
+                execution_eval.error_message = str(e)
+                db.commit()
+        except Exception:
+            db.rollback()
         task_manager.fail_task(task_id, str(e))
         task_manager.append_log(task_id, f"执行任务失败: {e}")
     finally:
@@ -1351,11 +1435,50 @@ async def start_execution(
     
     if not testset:
         raise HTTPException(status_code=404, detail="测试集不存在")
+
+    execution_testset = _clone_testset_with_questions(
+        db,
+        testset,
+        user_id=str(current_user.id),
+        stage="evaluation",
+        clone_name=f"{_short_display_name(_resolve_root_info(testset)['root_name'])}#E{_next_execution_no(db, str(current_user.id), _resolve_root_info(testset)['root_testset_id']):02d}",
+        extra_metadata={
+            "root_testset_id": _resolve_root_info(testset)["root_testset_id"],
+            "root_name": _resolve_root_info(testset)["root_name"],
+            "execution_no": _next_execution_no(db, str(current_user.id), _resolve_root_info(testset)["root_testset_id"]),
+            "display_name": f"{_short_display_name(_resolve_root_info(testset)['root_name'])}#E{_next_execution_no(db, str(current_user.id), _resolve_root_info(testset)['root_testset_id']):02d}",
+            "execution_source_testset_id": str(testset.id),
+            "execution_created_at": datetime.now().isoformat()
+        }
+    )
+    db.commit()
+    db.refresh(execution_testset)
+
+    question_total = db.query(Question).filter(Question.testset_id == str(execution_testset.id)).count()
+    execution_eval = EvaluationModel(
+        user_id=current_user.id,
+        testset_id=str(execution_testset.id),
+        evaluation_method=EXECUTION_EVAL_METHOD,
+        total_questions=question_total,
+        evaluated_questions=0,
+        eval_config={
+            "source": "talk_api",
+            "bot_id": request.bot_id,
+            "source_testset_id": str(testset.id),
+            "execution_testset_id": str(execution_testset.id)
+        },
+        status="pending"
+    )
+    db.add(execution_eval)
+    db.commit()
+    db.refresh(execution_eval)
         
     task_id = task_manager.create_task(
         task_type="execute_testset",
         params={
-            "testset_id": str(testset_id),
+            "testset_id": str(execution_testset.id),
+            "source_testset_id": str(testset.id),
+            "execution_evaluation_id": str(execution_eval.id),
             "mobile": request.mobile,
             "bot_id": request.bot_id
         }
@@ -1365,7 +1488,8 @@ async def start_execution(
         target=_run_execution_task,
         args=(
             task_id,
-            str(testset_id),
+            str(execution_eval.id),
+            str(execution_testset.id),
             str(current_user.id),
             request.mobile,
             request.verify_code,
@@ -1377,5 +1501,7 @@ async def start_execution(
     
     return {
         "task_id": task_id,
+        "execution_id": str(execution_eval.id),
+        "execution_testset_id": str(execution_testset.id),
         "message": "测试集执行任务已创建，请轮询状态"
     }

@@ -40,6 +40,13 @@
             <span>{{ row.question_count }}</span>
           </template>
         </el-table-column>
+        <el-table-column label="状态" width="100">
+          <template #default="{ row }">
+            <el-tag :type="getExecutionStatusType(row)">
+              {{ getExecutionStatusLabel(row) }}
+            </el-tag>
+          </template>
+        </el-table-column>
         <el-table-column prop="create_time" label="创建时间" width="180">
           <template #default="{ row }">
             {{ formatDateTime(row.create_time) }}
@@ -387,7 +394,7 @@
 </template>
 
 <script setup lang="ts">
-import { ref, reactive, computed, onMounted } from 'vue'
+import { ref, reactive, computed, onMounted, onActivated } from 'vue'
 import { useRouter } from 'vue-router'
 import { ElMessage, ElMessageBox, ElLoading } from 'element-plus'
 import { Plus } from '@element-plus/icons-vue'
@@ -553,7 +560,7 @@ const isUploadedTestset = (testset: TestSet) => {
 const fetchTestsets = async () => {
   loading.value = true
   try {
-    const response = await testsetApi.getTestSets()
+    const response = await testsetApi.getTestSets({ stage: 'base' })
     testsets.value = response.items.filter(item => !isUploadedTestset(item))
     filterTestsets()
   } catch (error) {
@@ -619,6 +626,18 @@ const viewTestset = (id: string) => {
 
 const goExecutePage = (testset: TestSet) => {
   router.push(`/testsets/${testset.id}/execute`)
+}
+
+const getExecutionStatusLabel = (testset: TestSet) => {
+  const status = testset.eval_status
+  if (status === 'evaluated' || !!testset.latest_evaluation_id) {
+    return '已执行'
+  }
+  return '可执行'
+}
+
+const getExecutionStatusType = (testset: TestSet) => {
+  return getExecutionStatusLabel(testset) === '已执行' ? 'success' : 'info'
 }
 
 const handleSendVerifyCode = async () => {
@@ -825,6 +844,7 @@ const pollTaskStatus = async (taskId: string, testsetId: string) => {
         progressInfo.stage = '生成完成'
         progressInfo.logs.push(`所有文档处理完成，共生成 ${generatedQuestions.value.length} 个问题`)
         ElMessage.success(`测试集创建成功，共生成 ${generatedQuestions.value.length} 个问题`)
+        await fetchTestsets()
         
       } else if (task.status === 'failed') {
         generating.value = false
@@ -894,7 +914,10 @@ const startGeneration = async () => {
     const testset = await testsetApi.createTestSet({
       document_id: generationForm.documentIds[0],
       name,
-      description: `自动生成的测试集，包含${generationForm.questionsPerDoc}个问题/文档`
+      description: `自动生成的测试集，包含${generationForm.questionsPerDoc}个问题/文档`,
+      metadata: {
+        document_ids: generationForm.documentIds
+      }
     })
     
     createdTestsetId.value = testset.id
@@ -955,6 +978,10 @@ onMounted(() => {
   fetchTestsets()
   fetchDocuments()
   loadTaxonomy()
+})
+
+onActivated(() => {
+  fetchTestsets()
 })
 </script>
 

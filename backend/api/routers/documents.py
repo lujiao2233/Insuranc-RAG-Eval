@@ -15,7 +15,7 @@ from pathlib import Path
 from api.dependencies import get_current_user
 from config.database import get_db
 from schemas import Document, DocumentCreate, DocumentUpdate, PaginatedResponse
-from models.database import User, Document as DocumentModel
+from models.database import User, Document as DocumentModel, TestSet as TestSetModel
 from config.settings import settings
 from services.document_service import DocumentService
 from utils.logger import get_logger
@@ -423,8 +423,16 @@ async def delete_document(
             if file_path.exists():
                 file_path.unlink()
         
-        # 由于在模型中设置了 cascade="all, delete-orphan"，
-        # db.delete(document) 会自动删除关联的 chunks 和 testsets
+        # 先解绑测试集，确保删除文档时不会影响测试集和后续报告
+        db.query(TestSetModel).filter(
+            TestSetModel.document_id == str(document_id),
+            TestSetModel.user_id == current_user.id
+        ).update(
+            {TestSetModel.document_id: None},
+            synchronize_session=False
+        )
+
+        # chunks 由 ondelete/cascade 清理；testsets 已解绑，不会被联动删除
         db.delete(document)
         db.commit()
         
@@ -432,16 +440,7 @@ async def delete_document(
     except Exception as e:
         db.rollback()
         logger.error(f"删除文档失败: {str(e)}")
-        # 如果是数据库外键错误，尝试手动删除关联数据
-        try:
-            db.query(ChunkModel).filter(ChunkModel.document_id == str(document_id)).delete()
-            # 注意：测试集可能有更多级联，这里只做基础清理
-            db.query(DocumentModel).filter(DocumentModel.id == str(document_id)).delete()
-            db.commit()
-            return {"message": "文档及其部分关联数据已删除（手动清理）", "id": str(document_id)}
-        except Exception as inner_e:
-            db.rollback()
-            raise HTTPException(status_code=500, detail=f"彻底删除失败: {str(inner_e)}")
+        raise HTTPException(status_code=500, detail="删除失败，请检查 testsets.document_id 外键是否已迁移为 SET NULL")
 
 
 @router.get("/{document_id}/content")

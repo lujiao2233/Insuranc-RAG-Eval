@@ -34,19 +34,6 @@
             {{ row.answered_questions || 0 }} / {{ row.question_count || 0 }}
           </template>
         </el-table-column>
-        <el-table-column label="评估状态" width="120">
-          <template #default="{ row }">
-            <el-tag v-if="row.eval_status === 'evaluated'" type="info">
-              已评估
-            </el-tag>
-            <el-tag v-else-if="row.eval_status === 'evaluable'" type="success">
-              可评估
-            </el-tag>
-            <el-tag v-else type="warning">
-              不可评估
-            </el-tag>
-          </template>
-        </el-table-column>
         <el-table-column prop="create_time" label="创建时间" width="180">
           <template #default="{ row }">
             {{ formatDateTime(row.create_time) }}
@@ -55,7 +42,7 @@
         <el-table-column label="操作" width="170" fixed="right">
           <template #default="{ row }">
             <div class="button-row">
-              <el-button type="primary" size="small" class="fixed-width-btn" @click="viewTestset(row.id)">
+              <el-button type="primary" size="small" class="fixed-width-btn" @click="viewTestset(row)">
                 查看
               </el-button>
               <el-button
@@ -117,7 +104,7 @@
 
 <script setup lang="ts">
 import { computed, onMounted, reactive, ref } from 'vue'
-import { useRouter } from 'vue-router'
+import { useRoute, useRouter } from 'vue-router'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import { Plus } from '@element-plus/icons-vue'
 import { testsetApi } from '@/api/testsets'
@@ -126,6 +113,7 @@ import type { TestSet } from '@/types'
 import type { UploadFile } from 'element-plus'
 
 const router = useRouter()
+const route = useRoute()
 
 const loading = ref(false)
 const testsets = ref<TestSet[]>([])
@@ -160,8 +148,16 @@ const filteredTestsets = computed(() => {
 const fetchTestsets = async () => {
   loading.value = true
   try {
-    const response = await testsetApi.getTestSets({ limit: 1000 })
+    const response = await testsetApi.getTestSets({ limit: 1000, stage: 'evaluation' })
     testsets.value = response.items.filter(item => isUploadedTestset(item) || item.can_evaluate)
+    const focusId = typeof route.query.focus_testset_id === 'string' ? route.query.focus_testset_id : ''
+    if (focusId) {
+      const focused = testsets.value.find(t => t.id === focusId)
+      if (focused) {
+        keyword.value = focused.name
+      }
+      router.replace({ path: '/evaluations' })
+    }
   } catch (error) {
     ElMessage.error('获取测试集列表失败')
   } finally {
@@ -202,8 +198,9 @@ const handleImportTestset = async () => {
   }
 }
 
-const viewTestset = (id: string) => {
-  router.push(`/testsets/${id}`)
+const viewTestset = (testset: TestSet) => {
+  // 评估管理统一查看“执行后可评估测试集详情”（含模型答案）
+  router.push(`/testsets/${testset.id}`)
 }
 
 const goEvaluationCreatePage = (testset: TestSet) => {

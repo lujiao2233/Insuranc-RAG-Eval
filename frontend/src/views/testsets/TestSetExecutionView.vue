@@ -53,7 +53,7 @@
         </div>
         <div v-if="executionComplete || executionFailed" style="margin-top: 12px;">
           <el-button @click="$router.push('/testsets')">返回测试集列表</el-button>
-          <el-button v-if="testset" type="primary" @click="$router.push(`/testsets/${testset.id}`)">查看测试集详情</el-button>
+          <el-button v-if="testset" type="primary" @click="goToTestsetDetail">查看测试集详情</el-button>
         </div>
       </div>
     </el-card>
@@ -62,16 +62,18 @@
 
 <script setup lang="ts">
 import { computed, onMounted, onUnmounted, reactive, ref } from 'vue'
-import { useRoute } from 'vue-router'
+import { useRoute, useRouter } from 'vue-router'
 import { ElMessage } from 'element-plus'
 import { testsetApi } from '@/api/testsets'
 import { useTaskStore } from '@/stores/task'
 import type { TestSet } from '@/types'
 
 const route = useRoute()
+const router = useRouter()
 const taskStore = useTaskStore()
 
 const testset = ref<TestSet | null>(null)
+const executionTestsetId = ref<string | null>(null)
 const executing = ref(false)
 const executionComplete = ref(false)
 const executionFailed = ref(false)
@@ -90,9 +92,13 @@ const executionInfo = reactive({
   total: 1,
   logs: [] as string[]
 })
+const taskProgressRatio = ref(0)
 
 const executionPercentage = computed(() => {
-  if (executionInfo.total === 0) return 0
+  if (taskProgressRatio.value > 0) {
+    return Math.round(taskProgressRatio.value * 100)
+  }
+  if (executionInfo.total <= 0) return 0
   return Math.round((executionInfo.current / executionInfo.total) * 100)
 })
 
@@ -141,17 +147,27 @@ const pollExecutionTaskStatus = (taskId: string) => {
     try {
       const task = await testsetApi.getTaskStatus(taskId)
       executionInfo.stage = task.message || task.status
+      if (typeof task.progress === 'number') {
+        taskProgressRatio.value = Math.max(0, Math.min(1, task.progress))
+      }
+
+      // 兜底从阶段文本中提取进度，例如：正在处理第 4/14 题...
+      const stageMatch = String(executionInfo.stage).match(/(\d+)\s*\/\s*(\d+)/)
+      if (stageMatch) {
+        executionInfo.current = parseInt(stageMatch[1], 10)
+        executionInfo.total = parseInt(stageMatch[2], 10)
+      }
 
       if (task.logs && task.logs.length > lastLogIndex) {
         const newLogs = task.logs.slice(lastLogIndex)
         for (const log of newLogs) {
           executionInfo.logs.push(log)
-          const match = log.match(/处理第\s*(\d+)\/(\d+)\s*题/)
+          const match = log.match(/(?:处理第\s*|提问\s*\[)(\d+)\s*\/\s*(\d+)/)
           if (match) {
             executionInfo.current = parseInt(match[1], 10)
             executionInfo.total = parseInt(match[2], 10)
             taskStore.updateTask(taskId, {
-              progress: Math.round((executionInfo.current / executionInfo.total) * 100),
+              progress: Math.round((taskProgressRatio.value || (executionInfo.current / executionInfo.total)) * 100),
               status: 'running'
             })
           }
@@ -164,6 +180,7 @@ const pollExecutionTaskStatus = (taskId: string) => {
         executionComplete.value = true
         executionInfo.stage = '执行完成'
         executionInfo.current = executionInfo.total
+        taskProgressRatio.value = 1
         taskStore.updateTask(taskId, { progress: 100, status: 'completed' })
         ElMessage.success('测试集执行完成')
         return
@@ -200,14 +217,18 @@ const handleStartExecution = async () => {
   executionInfo.stage = '准备中'
   executionInfo.current = 0
   executionInfo.total = 1
+  taskProgressRatio.value = 0
   executionInfo.logs = ['正在启动执行任务...']
 
   try {
-    const { task_id } = await testsetApi.startExecution(id, {
+    const { task_id, execution_testset_id } = await testsetApi.startExecution(id, {
       mobile: executionForm.mobile,
       verify_code: executionForm.verifyCode,
       bot_id: executionForm.botId
     })
+    if (execution_testset_id) {
+      executionTestsetId.value = execution_testset_id
+    }
 
     taskStore.addTask({
       id: task_id,
@@ -228,6 +249,13 @@ const handleStartExecution = async () => {
     executionInfo.logs.push(`错误: ${errorMsg}`)
     ElMessage.error(errorMsg)
   }
+}
+
+const goToTestsetDetail = () => {
+  if (!executionTestsetId.value) return
+  // 跳转后由 MainLayout 读取该标记并关闭当前执行页标签
+  sessionStorage.setItem('pending-close-tag-path', route.path)
+  router.push(`/evaluations?focus_testset_id=${executionTestsetId.value}`)
 }
 
 onMounted(() => {

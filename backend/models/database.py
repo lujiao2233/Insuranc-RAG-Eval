@@ -54,7 +54,8 @@ class Document(Base):
 
     user = relationship("User", back_populates="documents")
     chunks = relationship("DocumentChunk", back_populates="document", cascade="all, delete-orphan")
-    testsets = relationship("TestSet", back_populates="document", cascade="all, delete-orphan")
+    # 不对测试集做级联删除，避免删除文档时连带删除测试集/报告
+    testsets = relationship("TestSet", back_populates="document")
 
 class DocumentChunk(Base):
     __tablename__ = "document_chunks"
@@ -84,7 +85,8 @@ class TestSet(Base):
     __tablename__ = "testsets"
 
     id = Column(CHAR(36), primary_key=True, default=generate_uuid)
-    document_id = Column(CHAR(36), ForeignKey("documents.id", ondelete="CASCADE"), nullable=False)
+    # 允许文档删除后保留测试集，关联置空
+    document_id = Column(CHAR(36), ForeignKey("documents.id", ondelete="SET NULL"), nullable=True)
     user_id = Column(CHAR(36), ForeignKey("users.id", ondelete="CASCADE"), nullable=True)
     name = Column(String(255), nullable=False)
     description = Column(Text)

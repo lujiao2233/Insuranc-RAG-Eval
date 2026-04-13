@@ -268,11 +268,27 @@ const customCategory = ref('')
 const multipleSelection = ref<Document[]>([])
 const batchOperation = ref('')
 let pollingTimer: any = null
+let pollingStartedAt = 0
+const MAX_POLLING_DURATION_MS = 15 * 60 * 1000
 
 const startPolling = () => {
   if (pollingTimer) return
+  pollingStartedAt = Date.now()
   
   pollingTimer = setInterval(() => {
+    const elapsed = Date.now() - pollingStartedAt
+    if (elapsed > MAX_POLLING_DURATION_MS) {
+      stopPolling()
+      documentStore.documents
+        .filter(doc => doc.status === 'processing')
+        .forEach(doc => {
+          isAnalyzing.value[doc.id] = false
+          taskStore.updateTask(doc.id, { status: 'failed', error: '文档解析超时，请重试' })
+        })
+      ElMessage.warning('文档解析超时，已停止自动轮询，请刷新后重试解析')
+      return
+    }
+
     // 检查是否还有正在处理中的文档
     const hasProcessing = documentStore.documents.some(doc => doc.status === 'processing')
     if (hasProcessing) {
@@ -292,6 +308,7 @@ const stopPolling = () => {
     clearInterval(pollingTimer)
     pollingTimer = null
   }
+  pollingStartedAt = 0
 }
 
 // 监听文档列表，同步更新全局任务状态

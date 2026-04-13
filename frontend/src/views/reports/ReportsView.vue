@@ -10,11 +10,6 @@
         :data="reports"
         style="width: 100%"
       >
-        <el-table-column prop="evaluation_id" label="评估ID" width="200">
-          <template #default="{ row }">
-            {{ row.evaluation_id.substring(0, 8) }}...
-          </template>
-        </el-table-column>
         <el-table-column prop="testset_name" label="测试集" min-width="150" />
         <el-table-column prop="status" label="状态" width="100">
           <template #default="{ row }">
@@ -30,15 +25,22 @@
         </el-table-column>
         <el-table-column label="操作" width="250" fixed="right">
           <template #default="{ row }">
-            <el-button type="primary" text @click="viewReport(row.evaluation_id)">
-              查看
-            </el-button>
-            <el-button type="success" text @click="generateReport(row.evaluation_id, 'html')">
-              HTML
-            </el-button>
-            <el-button type="warning" text @click="generateReport(row.evaluation_id, 'pdf')">
-              PDF
-            </el-button>
+            <div class="button-row">
+              <el-button type="primary" size="small" class="fixed-width-btn" @click="viewReport(row.evaluation_id)">
+                查看
+              </el-button>
+              <el-button type="success" size="small" class="fixed-width-btn" @click="downloadReport(row.evaluation_id, 'html')">
+                HTML
+              </el-button>
+            </div>
+            <div class="button-row">
+              <el-button type="warning" size="small" class="fixed-width-btn" @click="downloadReport(row.evaluation_id, 'pdf')">
+                PDF
+              </el-button>
+              <el-button type="danger" size="small" class="fixed-width-btn" @click="handleDelete(row.evaluation_id)">
+                删除
+              </el-button>
+            </div>
           </template>
         </el-table-column>
       </el-table>
@@ -49,7 +51,7 @@
 <script setup lang="ts">
 import { ref, onMounted } from 'vue'
 import { useRouter } from 'vue-router'
-import { ElMessage } from 'element-plus'
+import { ElMessage, ElMessageBox } from 'element-plus'
 import { reportApi, type Report } from '@/api/reports'
 import { formatDateTime } from '@/utils/format'
 
@@ -92,22 +94,35 @@ const viewReport = (evaluationId: string) => {
   router.push(`/reports/${evaluationId}`)
 }
 
-const generateReport = async (evaluationId: string, format: 'pdf' | 'html') => {
+const downloadReport = async (evaluationId: string, format: 'pdf' | 'html') => {
   try {
-    const result = await reportApi.generateReport(evaluationId, format)
-    ElMessage.success(result.message)
-    
-    if (format === 'pdf') {
-      const blob = await reportApi.downloadReport(evaluationId, 'pdf')
-      const url = window.URL.createObjectURL(blob)
-      const a = document.createElement('a')
-      a.href = url
-      a.download = `report_${evaluationId.substring(0, 8)}.pdf`
-      a.click()
-      window.URL.revokeObjectURL(url)
-    }
+    const blob = await reportApi.downloadReport(evaluationId, format)
+    const url = window.URL.createObjectURL(blob)
+    const a = document.createElement('a')
+    a.href = url
+    a.download = `report_${evaluationId.substring(0, 8)}.${format}`
+    a.click()
+    window.URL.revokeObjectURL(url)
+    ElMessage.success('下载成功')
   } catch (error) {
-    ElMessage.error('生成报告失败')
+    ElMessage.error('下载失败')
+  }
+}
+
+const handleDelete = async (evaluationId: string) => {
+  try {
+    await ElMessageBox.confirm('确定要删除该报告吗？删除后不可恢复。', '删除确认', {
+      confirmButtonText: '确定',
+      cancelButtonText: '取消',
+      type: 'warning'
+    })
+    await reportApi.deleteReport(evaluationId)
+    ElMessage.success('删除成功')
+    await fetchReports()
+  } catch (error) {
+    if (error !== 'cancel') {
+      ElMessage.error('删除失败')
+    }
   }
 }
 
@@ -118,6 +133,14 @@ onMounted(() => {
 
 <style lang="scss" scoped>
 .reports-view {
-  // 样式
+  .button-row {
+    display: flex;
+    gap: 8px;
+    margin-bottom: 6px;
+  }
+  .fixed-width-btn {
+    width: 80px;
+    justify-content: center;
+  }
 }
 </style>

@@ -64,3 +64,26 @@ async def test_semantic_chunking_positions():
         extracted_text = text[c["start_char"]:c["end_char"]]
         # 允许前后有少量空格差异
         assert c["content"].strip() == extracted_text.strip()
+
+
+def test_issue_date_fallback_extraction():
+    extractor = MetadataExtractor()
+    text = "关于开展专项工作的通知\n发文日期：2026年04月10日\n请各部门落实。"
+    result = {
+        "doc_type": "公文公告",
+        "outline": []
+    }
+
+    normalized = extractor._ensure_issue_date(text, result)
+    assert normalized.get("issue_date") == "2026年04月10日"
+
+
+def test_issue_date_missing_not_included():
+    extractor = MetadataExtractor()
+    text = "关于开展专项工作的通知\n请各部门落实。"
+    result = {
+        "doc_type": "公文公告",
+        "outline": []
+    }
+    normalized = extractor._ensure_issue_date(text, result)
+    assert "issue_date" not in normalized

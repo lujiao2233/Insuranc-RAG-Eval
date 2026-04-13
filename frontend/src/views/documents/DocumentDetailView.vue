@@ -50,11 +50,11 @@
               </el-descriptions-item>
             </el-descriptions>
 
-            <div class="mt-4" v-if="document.doc_metadata">
+            <div class="mt-4" v-if="hasDocMetadataToDisplay">
               <h4>元数据详情</h4>
               <el-descriptions :column="2" border>
                 <el-descriptions-item
-                  v-for="(value, key) in document.doc_metadata"
+                  v-for="(value, key) in displayDocMetadata"
                   :key="key"
                   :label="getMetadataLabel(key)"
                 >
@@ -260,7 +260,7 @@
 </template>
 
 <script setup lang="ts">
-import { ref, reactive, onMounted, onUnmounted, watch } from 'vue'
+import { ref, reactive, onMounted, onUnmounted, watch, computed } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import { Download, Plus, Delete, ArrowRight, DataAnalysis, InfoFilled, Search } from '@element-plus/icons-vue'
@@ -308,12 +308,34 @@ const METADATA_LABEL_MAP: Record<string, string> = {
   _chunking_max_chunk_chars: '切片最大字符数',
   doc_type: '文档类型',
   purpose_summary: '用途摘要',
+  issue_date: '发文日期',
   page_count: '页数',
   total_pages: '总页数',
   pages: '页数'
 }
 
 const getMetadataLabel = (key: string) => METADATA_LABEL_MAP[key] || key
+
+const isDisplayableMetadataValue = (value: unknown) => {
+  if (value === null || value === undefined) return false
+  if (typeof value === 'string') {
+    const v = value.trim()
+    if (!v) return false
+    const lower = v.toLowerCase()
+    if (lower === 'unknown' || lower === 'n/a' || lower === 'na' || lower === 'null' || lower === 'none') return false
+    if (v === '未知' || v === '无' || v === '-' || v === '不详' || v === '缺失') return false
+    return true
+  }
+  return true
+}
+
+const displayDocMetadata = computed(() => {
+  const meta = (document.value?.doc_metadata || {}) as Record<string, unknown>
+  const entries = Object.entries(meta).filter(([, value]) => isDisplayableMetadataValue(value))
+  return Object.fromEntries(entries) as Record<string, unknown>
+})
+
+const hasDocMetadataToDisplay = computed(() => Object.keys(displayDocMetadata.value).length > 0)
 
 const getPageCountDisplay = (doc: any) => {
   const normalizePageCount = (value: unknown): number | null => {

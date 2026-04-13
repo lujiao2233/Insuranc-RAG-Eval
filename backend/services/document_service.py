@@ -239,6 +239,7 @@ class DocumentService:
         from models.database import Document as DocumentModel
         
         db = SessionLocal()
+        document = None
         try:
             task_manager.update_progress(task_id, 0.1, "正在启动文档分析...")
             document = db.query(DocumentModel).filter(DocumentModel.id == document_id).first()
@@ -254,11 +255,25 @@ class DocumentService:
                 db.commit() # 关键：提交 analyze_document 中的更改
                 task_manager.finish_task(task_id, message=f"分析完成，生成了 {result.get('chunks_count', 0)} 个切片")
             else:
+                # 失败时必须落库失败状态，避免前端一直识别为 processing 导致无限轮询
+                document.status = 'failed'
+                document.is_analyzed = False
+                db.commit()
                 task_manager.fail_task(task_id, result["message"])
 
         except Exception as e:
             db.rollback()
             logger.error(f"分析任务失败: {str(e)}")
+            try:
+                if document is None:
+                    document = db.query(DocumentModel).filter(DocumentModel.id == document_id).first()
+                if document:
+                    document.status = 'failed'
+                    document.is_analyzed = False
+                    db.commit()
+            except Exception as status_err:
+                db.rollback()
+                logger.error(f"写入文档失败状态时出错: {status_err}")
             task_manager.fail_task(task_id, f"分析失败: {str(e)}")
         finally:
             db.close()

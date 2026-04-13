@@ -77,7 +77,7 @@
             </div>
             
             <el-table 
-              :data="filteredQuestions" 
+              :data="paginatedQuestions" 
               style="width: 100%"
               :default-sort="{ prop: 'question_type', order: 'ascending' }"
             >
@@ -98,19 +98,26 @@
                   <span v-else>-</span>
                 </template>
               </el-table-column>
+              <el-table-column v-if="showModelAnswerColumn" prop="answer" label="模型答案" min-width="200">
+                <template #default="{ row }">
+                  <el-text truncated>{{ row.answer || '-' }}</el-text>
+                </template>
+              </el-table-column>
               <el-table-column prop="expected_answer" label="期望答案" min-width="200">
                 <template #default="{ row }">
                   <el-text truncated>{{ row.expected_answer || '-' }}</el-text>
                 </template>
               </el-table-column>
-              <el-table-column label="操作" width="150" fixed="right">
+              <el-table-column label="操作" width="170" fixed="right">
                 <template #default="{ row }">
-                  <el-button type="primary" text @click="editQuestion(row)">
-                    编辑
-                  </el-button>
-                  <el-button type="danger" text @click="deleteQuestion(row)">
-                    删除
-                  </el-button>
+                  <div class="button-row">
+                    <el-button type="primary" size="small" class="fixed-width-btn" @click="editQuestion(row)">
+                      编辑
+                    </el-button>
+                    <el-button type="danger" size="small" class="fixed-width-btn" @click="deleteQuestion(row)">
+                      删除
+                    </el-button>
+                  </div>
                 </template>
               </el-table-column>
             </el-table>
@@ -132,27 +139,13 @@
         <el-col :span="6">
           <el-card>
             <template #header>
-              <span>测试集信息</span>
-            </template>
-            
-            <el-descriptions :column="1" border>
-              <el-descriptions-item label="名称">{{ testset.name }}</el-descriptions-item>
-              <el-descriptions-item label="描述">{{ testset.description || '-' }}</el-descriptions-item>
-              <el-descriptions-item label="问题数">{{ testset.question_count }}</el-descriptions-item>
-              <el-descriptions-item label="生成方式">{{ testset.generation_method }}</el-descriptions-item>
-              <el-descriptions-item label="创建时间">{{ formatDateTime(testset.create_time) }}</el-descriptions-item>
-            </el-descriptions>
-          </el-card>
-          
-          <el-card class="mt-4">
-            <template #header>
               <span>操作</span>
             </template>
             
             <div class="action-buttons">
-              <el-button type="primary" @click="startEvaluation">
+              <el-button type="primary" @click="startExecution">
                 <el-icon><DataLine /></el-icon>
-                开始评估
+                执行测试
               </el-button>
               <el-button type="success" @click="exportTestset">
                 <el-icon><Download /></el-icon>
@@ -171,26 +164,17 @@
           
           <el-card class="mt-4">
             <template #header>
-              <span>问题统计</span>
+              <span>关联文档</span>
             </template>
             
-            <div class="stats-container">
-              <div class="stat-item">
-                <span class="stat-label">总问题数:</span>
-                <span class="stat-value">{{ questions.length }}</span>
+            <div class="document-list" v-if="relatedDocuments.length > 0">
+              <div class="document-item" v-for="doc in relatedDocuments" :key="doc.id">
+                <el-icon><Document /></el-icon>
+                <span class="doc-name">{{ doc.filename }}</span>
               </div>
-              <div class="stat-item">
-                <span class="stat-label">已分类:</span>
-                <span class="stat-value">{{ stats.categorized }}</span>
-              </div>
-              <div class="stat-item">
-                <span class="stat-label">未分类:</span>
-                <span class="stat-value">{{ stats.uncategorized }}</span>
-              </div>
-              <div class="stat-item">
-                <span class="stat-label">分类完整率:</span>
-                <span class="stat-value">{{ stats.total ? Math.round((stats.categorized / stats.total) * 100) : 0 }}%</span>
-              </div>
+            </div>
+            <div v-else class="no-document">
+              <el-empty description="暂无关联文档" :image-size="60" />
             </div>
           </el-card>
         </el-col>
@@ -323,10 +307,11 @@
 import { ref, reactive, computed, onMounted, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { ElMessage, ElMessageBox, ElLoading } from 'element-plus'
-import { Plus, MagicStick, DataLine, Download, Delete, Setting } from '@element-plus/icons-vue'
+import { Plus, MagicStick, DataLine, Download, Delete, Setting, Document } from '@element-plus/icons-vue'
 import { testsetApi } from '@/api/testsets'
+import { documentApi } from '@/api/documents'
 import { formatDateTime } from '@/utils/format'
-import type { TestSet, Question } from '@/types'
+import type { TestSet, Question, Document as DocumentType } from '@/types'
 import type { FormInstance, FormRules } from 'element-plus'
 
 const route = useRoute()
@@ -335,6 +320,7 @@ const router = useRouter()
 const loading = ref(false)
 const testset = ref<TestSet | null>(null)
 const questions = ref<Question[]>([])
+const relatedDocuments = ref<DocumentType[]>([])
 const filteredQuestions = ref<Question[]>([])
 const currentPage = ref(1)
 const pageSize = ref(10)
@@ -406,20 +392,6 @@ const questionTypeOptions = computed(() => {
   return categoryGroups.flatMap(category => category.minors)
 })
 
-// 计算属性
-const stats = computed(() => {
-  const result = {
-    total: questions.value.length,
-    categorized: 0,
-    uncategorized: 0
-  }
-  questions.value.forEach(q => {
-    if (q.category_major && q.category_minor) result.categorized++
-    else result.uncategorized++
-  })
-  return result
-})
-
 const getQuestionTypeText = (type: string) => {
   return type || '-'
 }
@@ -431,12 +403,51 @@ const fetchTestset = async () => {
   try {
     testset.value = await testsetApi.getTestSet(id)
     await fetchQuestions()
-    filterQuestions() // 初始化过滤
+    await fetchRelatedDocuments()
+    filterQuestions()
   } catch (error) {
     ElMessage.error('获取测试集详情失败')
     router.back()
   } finally {
     loading.value = false
+  }
+}
+
+const fetchRelatedDocuments = async () => {
+  if (!testset.value) {
+    relatedDocuments.value = []
+    return
+  }
+  
+  try {
+    const metadataDocIds = Array.isArray(testset.value.metadata?.document_ids)
+      ? testset.value.metadata.document_ids.map((id: string) => String(id).trim()).filter(Boolean)
+      : []
+    const fallbackDocIds = (testset.value.document_id || '')
+      .split(',')
+      .map(id => id.trim())
+      .filter(Boolean)
+    const questionDocIds = questions.value
+      .map((q: any) => {
+        const meta = (q?.metadata || {}) as Record<string, any>
+        return String(meta.doc_id || meta.document_id || meta.source_doc_id || '').trim()
+      })
+      .filter(Boolean)
+
+    const docIds = Array.from(new Set([...metadataDocIds, ...fallbackDocIds, ...questionDocIds]))
+
+    if (docIds.length === 0) {
+      relatedDocuments.value = []
+      return
+    }
+
+    const docs = await Promise.allSettled(docIds.map(id => documentApi.getDocument(id)))
+    relatedDocuments.value = docs
+      .filter((item): item is PromiseFulfilledResult<any> => item.status === 'fulfilled')
+      .map(item => item.value)
+  } catch (error) {
+    console.error('Failed to fetch related documents:', error)
+    relatedDocuments.value = []
   }
 }
 
@@ -494,11 +505,9 @@ const paginatedQuestions = computed(() => {
   return filteredQuestions.value.slice(start, end)
 })
 
-// 为了保持模板中的数据源一致，我们更新filteredQuestions为分页后的数据
-watch(paginatedQuestions, (newVal) => {
-  // 这里我们不直接赋值，而是保持filteredQuestions为完整过滤结果
-  // 在模板中直接使用paginatedQuestions
-}, { immediate: true })
+const showModelAnswerColumn = computed(() => {
+  return questions.value.some(q => !!(q.answer && String(q.answer).trim()))
+})
 
 const editQuestion = (question: Question) => {
   editingQuestion.value = question
@@ -581,26 +590,61 @@ const resetQuestionForm = () => {
   questionForm.context = ''
 }
 
+const sleep = (ms: number) => new Promise(resolve => setTimeout(resolve, ms))
+
+const waitGenerationTaskFinished = async (taskId: string) => {
+  const maxAttempts = 300
+  for (let i = 0; i < maxAttempts; i++) {
+    const task = await testsetApi.getTaskStatus(taskId)
+    if (task.status === 'finished') {
+      return task
+    }
+    if (task.status === 'failed') {
+      throw new Error(task.error || task.message || '任务执行失败')
+    }
+    await sleep(2000)
+  }
+  throw new Error('任务执行超时，请稍后在任务中心查看结果')
+}
+
+const startGenerateByTask = async (
+  loadingText: string,
+  params: {
+    num_questions?: number
+    question_types?: string | string[]
+    generation_mode?: 'advanced'
+    enable_safety_robustness?: boolean
+    multi_doc_ratio?: number
+  }
+) => {
+  if (!testset.value) return
+  const loadingInstance = ElLoading.service({
+    lock: true,
+    text: loadingText,
+    background: 'rgba(255, 255, 255, 0.7)'
+  })
+
+  try {
+    const { task_id, message } = await testsetApi.generateQuestions(testset.value.id, params)
+    ElMessage.info(message || '生成任务已创建，正在处理中...')
+    await waitGenerationTaskFinished(task_id)
+    await fetchQuestions()
+    ElMessage.success('问题生成完成')
+  } finally {
+    loadingInstance.close()
+  }
+}
+
 const generateQuestions = async () => {
   if (!testset.value) return
   
   try {
-    const loadingInstance = ElLoading.service({
-      lock: true,
-      text: '正在生成问题...',
-      background: 'rgba(255, 255, 255, 0.7)'
-    })
-    
-    const result = await testsetApi.generateQuestions(testset.value.id, {
+    await startGenerateByTask('正在生成问题...', {
       num_questions: 10,
       question_types: ['事实召回', '条件推理']
     })
-    
-    loadingInstance.close()
-    ElMessage.success(result.message)
-    fetchQuestions()
-  } catch (error) {
-    ElMessage.error('生成问题失败')
+  } catch (error: any) {
+    ElMessage.error(error?.message || '生成问题失败')
   }
 }
 
@@ -608,22 +652,12 @@ const generateQuestionsWithParams = async (num: number) => {
   if (!testset.value) return
   
   try {
-    const loadingInstance = ElLoading.service({
-      lock: true,
-      text: `正在生成${num}个问题...`,
-      background: 'rgba(255, 255, 255, 0.7)'
-    })
-    
-    const result = await testsetApi.generateQuestions(testset.value.id, {
+    await startGenerateByTask(`正在生成${num}个问题...`, {
       num_questions: num,
       question_types: ['事实召回', '条件推理', '定义解释']
     })
-    
-    loadingInstance.close()
-    ElMessage.success(result.message)
-    fetchQuestions()
-  } catch (error) {
-    ElMessage.error('生成问题失败')
+  } catch (error: any) {
+    ElMessage.error(error?.message || '生成问题失败')
   }
 }
 
@@ -631,28 +665,19 @@ const confirmGenerateQuestions = async () => {
   if (!testset.value || !generateFormRef.value) return
   
   try {
-    const loadingInstance = ElLoading.service({
-      lock: true,
-      text: '正在生成问题...',
-      background: 'rgba(255, 255, 255, 0.7)'
-    })
-    
-    const result = await testsetApi.generateQuestions(testset.value.id, {
+    await startGenerateByTask('正在生成问题...', {
       num_questions: generateForm.num_questions,
       question_types: generateForm.question_types.join(',')
     })
-    
-    loadingInstance.close()
-    ElMessage.success(result.message)
     showGenerateConfig.value = false
-    fetchQuestions()
-  } catch (error) {
-    ElMessage.error('生成问题失败')
+  } catch (error: any) {
+    ElMessage.error(error?.message || '生成问题失败')
   }
 }
 
-const startEvaluation = () => {
-  router.push(`/evaluations/new?testset_id=${testset.value?.id}`)
+const startExecution = () => {
+  if (!testset.value?.id) return
+  router.push(`/testsets/${testset.value.id}/execute`)
 }
 
 const exportTestset = async () => {
@@ -663,7 +688,7 @@ const exportTestset = async () => {
     const url = window.URL.createObjectURL(blob)
     const a = document.createElement('a')
     a.href = url
-    a.download = `${testset.value.name}.json`
+    a.download = `${testset.value.name}.csv`
     a.click()
     window.URL.revokeObjectURL(url)
   } catch (error) {
@@ -714,32 +739,66 @@ onMounted(() => {
     margin-bottom: 16px;
   }
   
+  .button-row {
+    display: flex;
+    gap: 8px;
+    margin-bottom: 6px;
+  }
+
+  .button-row:last-child {
+    margin-bottom: 0;
+  }
+
+  .fixed-width-btn {
+    width: 64px;
+  }
+  
   .action-buttons {
     display: flex;
     flex-direction: column;
+    align-items: stretch;
     gap: 12px;
-    
+
     .el-button {
       width: 100%;
       justify-content: flex-start;
+      text-align: left;
+    }
+
+    .el-button + .el-button {
+      margin-left: 0;
     }
   }
   
-  .stats-container {
-    .stat-item {
+  .document-list {
+    .document-item {
       display: flex;
-      justify-content: space-between;
-      margin-bottom: 8px;
-      
-      .stat-label {
-        color: #606266;
+      align-items: center;
+      gap: 8px;
+      padding: 8px 0;
+      border-bottom: 1px solid #ebeef5;
+
+      &:last-child {
+        border-bottom: none;
       }
-      
-      .stat-value {
-        font-weight: bold;
-        color: #303133;
+
+      .el-icon {
+        color: #409eff;
+        font-size: 16px;
+      }
+
+      .doc-name {
+        flex: 1;
+        white-space: normal;
+        word-break: break-all;
+        overflow-wrap: anywhere;
+        line-height: 1.4;
       }
     }
+  }
+
+  .no-document {
+    padding: 20px 0;
   }
   
   .pagination-container {

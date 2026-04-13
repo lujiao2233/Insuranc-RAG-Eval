@@ -131,7 +131,7 @@ class TestSetUpdate(BaseModel):
 
 class TestSet(TestSetBase):
     id: uuid.UUID
-    document_id: uuid.UUID
+    document_id: Optional[uuid.UUID] = None
     user_id: Optional[uuid.UUID] = None
     create_time: datetime
     created_at: datetime

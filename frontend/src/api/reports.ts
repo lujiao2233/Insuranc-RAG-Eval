@@ -57,5 +57,10 @@ export const reportApi = {
 
   downloadReport(evaluationId: string, format: 'pdf' | 'html' = 'pdf'): Promise<Blob> {
     return request.get(`/reports/${evaluationId}/download?format=${format}`, {}, { responseType: 'blob' })
+  },
+
+  deleteReport(evaluationId: string) {
+    // 报告是评估结果的呈现，删除报告等价于删除该评估记录
+    return request.delete(`/evaluations/${evaluationId}`)
   }
 }

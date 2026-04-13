@@ -61,6 +61,7 @@ class MetadataExtractor:
                 return {}
             
             result = self._parse_json_response(str(response))
+            result = self._ensure_issue_date(text, result)
             if not result or "outline" not in result:
                 logger.error(f"LLM响应解析成功但缺少必要字段: {result}")
             return result
@@ -145,6 +146,67 @@ class MetadataExtractor:
 
         return result
 
+    def _ensure_issue_date(self, text: str, result: Dict[str, Any]) -> Dict[str, Any]:
+        """确保结果中尽可能包含发文日期字段（issue_date）"""
+        if not isinstance(result, dict):
+            return result
+
+        # 统一将不同命名的日期字段映射到 issue_date
+        candidate_keys = [
+            "issue_date", "document_date", "official_date",
+            "发文日期", "成文日期", "印发日期", "发布日期",
+            "发文时间", "成文时间"
+        ]
+        for key in candidate_keys:
+            value = result.get(key)
+            if isinstance(value, str) and value.strip():
+                normalized = self._normalize_issue_date_value(value)
+                if normalized:
+                    result["issue_date"] = normalized
+                break
+
+        # 若仍缺失，尝试从原文中兜底提取
+        if not result.get("issue_date"):
+            extracted = self._extract_issue_date_from_text(text)
+            if extracted:
+                result["issue_date"] = extracted
+        else:
+            normalized_existing = self._normalize_issue_date_value(str(result.get("issue_date")))
+            if normalized_existing:
+                result["issue_date"] = normalized_existing
+            else:
+                result.pop("issue_date", None)
+
+        return result
+    
+    def _normalize_issue_date_value(self, value: str) -> Optional[str]:
+        if not isinstance(value, str):
+            return None
+        v = value.strip()
+        if not v:
+            return None
+        if v.lower() in {"unknown", "n/a", "na", "null", "none"}:
+            return None
+        if v in {"未知", "无", "-", "不详", "缺失"}:
+            return None
+        return v
+
+    def _extract_issue_date_from_text(self, text: str) -> Optional[str]:
+        """从正文中提取发文日期（优先匹配显式字段）"""
+        if not text:
+            return None
+
+        patterns = [
+            r"(?:发文日期|成文日期|印发日期|发布日期|发文时间|成文时间)\s*[：:]\s*([0-9]{4}[年\./-][0-9]{1,2}[月\./-][0-9]{1,2}日?)",
+            r"(?:发文日期|成文日期|印发日期|发布日期|发文时间|成文时间)\s+([0-9]{4}[年\./-][0-9]{1,2}[月\./-][0-9]{1,2}日?)",
+        ]
+        for pattern in patterns:
+            match = re.search(pattern, text)
+            if match:
+                return match.group(1).strip()
+
+        return None
+
     def _get_extraction_prompt(self, text: str) -> str:
         """生成元数据提取提示词
         
@@ -200,6 +262,11 @@ class MetadataExtractor:
 
 ### 第四步：设计元数据字段
 1. 根据文档内容设计合适的元数据键值对 (metadata_values)。
+2. **重点规则（公文公告）**：
+   - 若文档类型为 [公文公告]，请优先识别并提取发文日期，统一字段名为 `issue_date`。
+   - 可从“发文日期/成文日期/印发日期/发布日期”中识别，优先级依次为：发文日期 > 成文日期 > 印发日期 > 发布日期。
+   - 如果存在多个日期，只保留最能代表正式发文时间的一个写入 `issue_date`。
+   - 如果无法从文档中可靠识别日期，请不要输出 `issue_date` 字段（不要输出空字符串/未知/占位符）。
 
 ### 第五步：输出格式（只输出标准 JSON）
 

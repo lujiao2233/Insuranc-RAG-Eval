@@ -70,19 +70,27 @@ def migrate():
             print("Running create_all()...")
             Base.metadata.create_all(bind=engine)
 
-        # Update foreign keys to CASCADE
-        print("\nUpdating foreign keys to support CASCADE...")
+        # 调整 testsets.document_id：允许置空，并在文档删除时 SET NULL
+        print("\nUpdating testsets.document_id to nullable...")
+        try:
+            conn.execute(text("ALTER TABLE testsets MODIFY COLUMN document_id CHAR(36) NULL"))
+            print("Column testsets.document_id set to NULLABLE.")
+        except Exception as e:
+            print(f"Warning: Could not alter testsets.document_id nullability: {e}")
+
+        # Update foreign keys
+        print("\nUpdating foreign keys...")
         fk_updates = [
-            ("document_chunks", "document_id", "documents", "id"),
-            ("testsets", "document_id", "documents", "id"),
-            ("testsets", "user_id", "users", "id"),
-            ("questions", "testset_id", "testsets", "id"),
-            ("evaluations", "user_id", "users", "id"),
-            ("evaluation_results", "evaluation_id", "evaluations", "id"),
-            ("configurations", "user_id", "users", "id")
+            ("document_chunks", "document_id", "documents", "id", "CASCADE"),
+            ("testsets", "document_id", "documents", "id", "SET NULL"),
+            ("testsets", "user_id", "users", "id", "CASCADE"),
+            ("questions", "testset_id", "testsets", "id", "CASCADE"),
+            ("evaluations", "user_id", "users", "id", "CASCADE"),
+            ("evaluation_results", "evaluation_id", "evaluations", "id", "CASCADE"),
+            ("configurations", "user_id", "users", "id", "CASCADE")
         ]
         
-        for table, col, ref_table, ref_col in fk_updates:
+        for table, col, ref_table, ref_col, on_delete in fk_updates:
             try:
                 # Find existing constraint name
                 fk_query = text(f"""
@@ -96,13 +104,13 @@ def migrate():
                 res = conn.execute(fk_query).fetchone()
                 if res:
                     constraint_name = res[0]
-                    print(f"Dropping and recreating FK '{constraint_name}' on {table}({col}) with ON DELETE CASCADE...")
+                    print(f"Dropping and recreating FK '{constraint_name}' on {table}({col}) with ON DELETE {on_delete}...")
                     conn.execute(text(f"ALTER TABLE {table} DROP FOREIGN KEY {constraint_name}"))
                     conn.execute(text(f"""
                         ALTER TABLE {table} 
                         ADD CONSTRAINT {constraint_name} 
                         FOREIGN KEY ({col}) REFERENCES {ref_table}({ref_col}) 
-                        ON DELETE CASCADE
+                        ON DELETE {on_delete}
                     """))
                     print(f"FK '{constraint_name}' updated.")
             except Exception as e:

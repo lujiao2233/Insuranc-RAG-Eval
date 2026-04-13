@@ -10,7 +10,7 @@
     
     <template v-if="evaluation">
       <el-row :gutter="20">
-        <el-col :span="16">
+        <el-col :span="24">
           <el-card>
             <template #header>
               <span>评估信息</span>
@@ -63,16 +63,40 @@
             <el-table :data="results" style="width: 100%">
               <el-table-column type="expand">
                 <template #default="{ row }">
-                  <div style="padding: 20px; background-color: #fafafa;">
-                    <h4>打分依据 (Reasoning)</h4>
-                    <div v-if="row.reasons && Object.keys(row.reasons).length > 0">
-                      <div v-for="(reason, metricName) in row.reasons" :key="metricName" style="margin-bottom: 10px;">
-                        <el-tag size="small" type="info" style="margin-bottom: 4px;">{{ metricName }}</el-tag>
-                        <p style="margin: 0; color: #606266; font-size: 14px; line-height: 1.5;">{{ reason }}</p>
+                  <div class="expand-content">
+                    <div class="expand-section">
+                      <h4>问题</h4>
+                      <p class="section-text">{{ row.question_text }}</p>
+                    </div>
+                    
+                    <div class="expand-section" v-if="row.question_type || row.category_major || row.category_minor">
+                      <h4>问题类型</h4>
+                      <div class="tag-group">
+                        <el-tag v-if="row.category_major" size="small" type="info">{{ row.category_major }}</el-tag>
+                        <el-tag v-if="row.category_minor" size="small" type="warning">{{ row.category_minor }}</el-tag>
+                        <el-tag v-if="row.question_type && !row.category_minor" size="small">{{ row.question_type }}</el-tag>
                       </div>
                     </div>
-                    <div v-else>
-                      <el-empty description="暂无打分依据" :image-size="60" />
+                    
+                    <div class="expand-section" v-if="row.generated_answer">
+                      <h4>模型答案</h4>
+                      <p class="section-text">{{ row.generated_answer }}</p>
+                    </div>
+                    
+                    <div class="expand-section" v-if="row.context">
+                      <h4>文档切片</h4>
+                      <p class="section-text context-text">{{ row.context }}</p>
+                    </div>
+                    
+                    <div class="expand-section">
+                      <h4>打分依据</h4>
+                      <div v-if="row.reasons && Object.keys(row.reasons).length > 0" class="reasons-list">
+                        <div v-for="(reason, metricName) in row.reasons" :key="metricName" class="reason-item">
+                          <el-tag size="small" type="info">{{ getMetricName(metricName as string) }}</el-tag>
+                          <p class="reason-text">{{ reason }}</p>
+                        </div>
+                      </div>
+                      <el-empty v-else description="暂无打分依据" :image-size="60" />
                     </div>
                   </div>
                 </template>
@@ -92,43 +116,12 @@
                       size="small"
                       class="mr-1"
                     >
-                      {{ key }}: {{ value.toFixed(3) }}
+                      {{ getMetricName(key as string) }}: {{ value.toFixed(3) }}
                     </el-tag>
                   </div>
                 </template>
               </el-table-column>
             </el-table>
-          </el-card>
-        </el-col>
-        
-        <el-col :span="8">
-          <el-card>
-            <template #header>
-              <span>操作</span>
-            </template>
-            
-            <div class="action-buttons">
-              <el-button
-                type="primary"
-                @click="viewReport"
-                :disabled="evaluation.status !== 'completed'"
-              >
-                <el-icon><Document /></el-icon>
-                查看报告
-              </el-button>
-              <el-button
-                type="success"
-                @click="exportResults"
-                :disabled="evaluation.status !== 'completed'"
-              >
-                <el-icon><Download /></el-icon>
-                导出结果
-              </el-button>
-              <el-button type="danger" @click="handleDelete">
-                <el-icon><Delete /></el-icon>
-                删除评估
-              </el-button>
-            </div>
           </el-card>
         </el-col>
       </el-row>
@@ -142,7 +135,6 @@ import { useRoute, useRouter } from 'vue-router'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import { Document, Download, Delete } from '@element-plus/icons-vue'
 import * as echarts from 'echarts'
-import { useEvaluationStore } from '@/stores/evaluation'
 import { useTaskStore } from '@/stores/task'
 import { evaluationApi } from '@/api/evaluations'
 import { formatDateTime, formatDuration } from '@/utils/format'
@@ -150,7 +142,6 @@ import type { Evaluation, EvaluationResult } from '@/types'
 
 const route = useRoute()
 const router = useRouter()
-const evaluationStore = useEvaluationStore()
 const taskStore = useTaskStore()
 
 const loading = ref(false)
@@ -199,6 +190,25 @@ const getMetricType = (value: number) => {
   if (value >= 0.8) return 'success'
   if (value >= 0.6) return 'warning'
   return 'danger'
+}
+
+const getMetricName = (key: string): string => {
+  const metricNames: Record<string, string> = {
+    answer_relevance: '答案相关性',
+    context_relevance: '上下文相关性',
+    faithfulness: '忠实度',
+    answer_correctness: '答案正确性',
+    answer_similarity: '答案相似度',
+    context_precision: '上下文精确度',
+    context_recall: '上下文召回率',
+    ragas_score: '综合评分',
+    overall_score: '综合评分',
+    total: '总分',
+    score: '得分',
+    overall: '总体',
+    average: '平均值'
+  }
+  return metricNames[key] || key
 }
 
 const fetchEvaluation = async () => {
@@ -301,7 +311,7 @@ const initChart = () => {
       ? (value as any).mean 
       : value
     return {
-      name: key,
+      name: getMetricName(key),
       value: typeof mean === 'number' ? mean : 0
     }
   })
@@ -333,38 +343,6 @@ const initChart = () => {
   chartInstance.setOption(option)
 }
 
-const viewReport = () => {
-  router.push(`/reports/${evaluation.value?.id}`)
-}
-
-const exportResults = () => {
-  ElMessage.info('导出功能开发中')
-}
-
-const handleDelete = async () => {
-  if (!evaluation.value) return
-  
-  try {
-    await ElMessageBox.confirm(
-      '确定要删除此评估吗？',
-      '删除确认',
-      {
-        confirmButtonText: '确定',
-        cancelButtonText: '取消',
-        type: 'warning'
-      }
-    )
-    
-    await evaluationStore.deleteEvaluation(evaluation.value.id)
-    ElMessage.success('删除成功')
-    router.push('/evaluations')
-  } catch (error) {
-    if (error !== 'cancel') {
-      ElMessage.error('删除失败')
-    }
-  }
-}
-
 onMounted(() => {
   fetchEvaluation()
 })
@@ -377,17 +355,6 @@ onUnmounted(() => {
 
 <style lang="scss" scoped>
 .evaluation-detail {
-  .action-buttons {
-    display: flex;
-    flex-direction: column;
-    gap: 12px;
-    
-    .el-button {
-      width: 100%;
-      justify-content: flex-start;
-    }
-  }
-  
   .metrics-chart {
     width: 100%;
     height: 300px;
@@ -402,6 +369,78 @@ onUnmounted(() => {
   .progress-info {
     color: #909399;
     font-size: 14px;
+  }
+
+  .expand-content {
+    padding: 20px;
+    background-color: #fafafa;
+
+    .expand-section {
+      margin-bottom: 16px;
+
+      &:last-child {
+        margin-bottom: 0;
+      }
+
+      h4 {
+        margin: 0 0 8px 0;
+        font-size: 14px;
+        font-weight: 600;
+        color: #303133;
+      }
+
+      .section-text {
+        margin: 0;
+        color: #606266;
+        font-size: 14px;
+        line-height: 1.6;
+        white-space: pre-wrap;
+        word-break: break-word;
+      }
+
+      .context-text {
+        background-color: #f5f7fa;
+        padding: 12px;
+        border-radius: 4px;
+        max-height: 200px;
+        overflow-y: auto;
+      }
+
+      .tag-group {
+        display: flex;
+        gap: 8px;
+        flex-wrap: wrap;
+      }
+
+      .reasons-list {
+        .reason-item {
+          margin-bottom: 12px;
+
+          &:last-child {
+            margin-bottom: 0;
+          }
+
+          .el-tag {
+            margin-bottom: 4px;
+          }
+
+          .reason-text {
+            margin: 0;
+            color: #606266;
+            font-size: 14px;
+            line-height: 1.5;
+          }
+        }
+      }
+    }
+  }
+
+  .mt-2 {
+    margin-top: 0.5rem;
+  }
+
+  .mt-4 {
+    margin-top: 1.5rem;
   }
 }
 </style>

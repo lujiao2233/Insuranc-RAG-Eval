@@ -92,7 +92,7 @@ const routes: RouteRecordRaw[] = [
       {
         path: 'reports/:id',
         name: 'ReportDetail',
-        component: () => import('@/views/reports/ReportDetailView.vue'),
+        component: () => import('@/views/evaluations/EvaluationDetailView.vue'),
         meta: { title: '报告详情' }
       },
       {

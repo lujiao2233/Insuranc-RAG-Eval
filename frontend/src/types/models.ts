@@ -39,6 +39,7 @@ export interface TestSet {
   answered_questions?: number
   can_evaluate?: boolean
   eval_status?: 'evaluated' | 'evaluable' | 'not_evaluable'
+  latest_evaluation_id?: string
   question_types?: Record<string, number>
   generation_method: string
   file_path?: string
@@ -86,6 +87,9 @@ export interface EvaluationResult {
   evaluation_id: string
   question_id?: string
   question_text: string
+  question_type?: string
+  category_major?: string
+  category_minor?: string
   expected_answer?: string
   generated_answer?: string
   context?: string

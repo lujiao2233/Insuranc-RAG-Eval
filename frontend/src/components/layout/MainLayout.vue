@@ -269,6 +269,13 @@ watch(
   (path) => {
     activeTab.value = path
     addTag()
+
+    // 处理页面发起的“跳转后关闭指定标签页”
+    const pendingClosePath = sessionStorage.getItem('pending-close-tag-path')
+    if (pendingClosePath) {
+      closeTagSilently(pendingClosePath)
+      sessionStorage.removeItem('pending-close-tag-path')
+    }
   },
   { immediate: true }
 )
@@ -305,6 +312,12 @@ const handleTabRemove = (path: string) => {
       router.push('/dashboard')
     }
   }
+}
+
+const closeTagSilently = (path: string) => {
+  const index = visitedViews.value.findIndex((tag) => tag.path === path)
+  if (index === -1) return
+  visitedViews.value.splice(index, 1)
 }
 
 const activeMenu = computed(() => {

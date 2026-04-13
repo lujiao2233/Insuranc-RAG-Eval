@@ -109,12 +109,17 @@
               class="mt-10"
             />
             <el-alert
-              v-if="redirectingAfterSuccess"
+              v-if="generationSucceeded"
               type="success"
               :closable="false"
-              title="生成成功，正在自动跳转到测试集详情..."
+              title="生成成功，请点击“查看测试集详情”进入详情页。"
               class="mt-10"
             />
+            <el-form-item v-if="generationSucceeded" class="mt-10">
+              <el-button type="primary" plain style="width: 100%;" @click="goToCreatedTestset">
+                查看测试集详情
+              </el-button>
+            </el-form-item>
           </el-form>
           </div>
         </el-card>
@@ -345,7 +350,7 @@
 </template>
 
 <script setup lang="ts">
-import { ref, reactive, computed, onMounted, onUnmounted } from 'vue'
+import { ref, reactive, computed, onMounted, onUnmounted, onActivated } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { ElMessage, ElNotification } from 'element-plus'
 import { testsetApi } from '@/api/testsets'
@@ -376,7 +381,6 @@ const createdTestsetId = ref<string | null>(null)
 const generatedQuestions = ref<any[]>([])
 const filterText = ref('')
 const initialLoading = ref(false)
-const redirectingAfterSuccess = ref(false)
 const documents = ref<any[]>([])
 const lastSubmitPayload = ref<null | {
   name: string
@@ -386,7 +390,6 @@ const lastSubmitPayload = ref<null | {
   personaJson: string
 }>(null)
 let pollingTimer: number | null = null
-let autoRedirectTimer: number | null = null
 
 // 进度信息
 const progressInfo = reactive({
@@ -410,6 +413,13 @@ const progressStatus = computed(() => {
   if (progressPercentage.value > 0) return ''
   return 'exception'
 })
+
+const generationSucceeded = computed(() =>
+  !generating.value &&
+  !generationFailed.value &&
+  !!createdTestsetId.value &&
+  generatedQuestions.value.length > 0
+)
 
 // 过滤后的问题
 const filteredQuestions = computed(() => {
@@ -542,19 +552,6 @@ const stopPolling = () => {
   }
 }
 
-const scheduleAutoRedirect = () => {
-  if (!createdTestsetId.value) return
-  redirectingAfterSuccess.value = true
-  if (autoRedirectTimer) {
-    window.clearTimeout(autoRedirectTimer)
-  }
-  autoRedirectTimer = window.setTimeout(() => {
-    if (createdTestsetId.value) {
-      router.push(`/testsets/${createdTestsetId.value}`)
-    }
-  }, 1200)
-}
-
 const pollTaskStatus = (taskId: string) => {
   let lastLogIndex = 0
   const poll = async () => {
@@ -587,7 +584,7 @@ const pollTaskStatus = (taskId: string) => {
         stopPolling()
         generating.value = false
         generatedQuestions.value = task.result?.questions || []
-        progressInfo.current = generatedQuestions.value.length || progressInfo.total
+        progressInfo.current = progressInfo.total
         progressInfo.stage = '生成完成'
         
         // 更新全局任务为完成
@@ -598,10 +595,9 @@ const pollTaskStatus = (taskId: string) => {
 
         ElNotification({
           title: '生成成功',
-          message: `已生成 ${generatedQuestions.value.length} 个问题，正在跳转详情页`,
+          message: `已生成 ${generatedQuestions.value.length} 个问题，请点击“查看测试集详情”继续`,
           type: 'success'
         })
-        scheduleAutoRedirect()
         return
       }
 
@@ -660,7 +656,6 @@ const submitGeneration = async (payload: {
 }) => {
   generating.value = true
   generationFailed.value = false
-  redirectingAfterSuccess.value = false
   generatedQuestions.value = []
   progressInfo.stage = '准备中'
   progressInfo.current = 0
@@ -764,6 +759,47 @@ const retryLastSubmit = async () => {
   }
 }
 
+const resetGenerationPage = () => {
+  stopPolling()
+  generating.value = false
+  generationFailed.value = false
+  createdTestsetId.value = null
+  generatedQuestions.value = []
+  lastSubmitPayload.value = null
+  form.name = `测试集_${new Date().toISOString().slice(0, 19).replace(/:/g, '-')}`
+  form.documentIds = []
+  form.questionsPerDoc = 10
+  form.enableRobustnessInputQuality = false
+  form.enableComplianceSafety = false
+  form.personaJson = ''
+  progressInfo.stage = '准备中'
+  progressInfo.current = 0
+  progressInfo.total = 0
+  progressInfo.logs = []
+  filterText.value = ''
+  pickerSelectedCategory.value = ''
+  tempDocumentIds.value = []
+}
+
+const applyRouteQuery = () => {
+  const queryDocumentId = typeof route.query.document_id === 'string' ? route.query.document_id : ''
+  const queryTestsetName = typeof route.query.testset_name === 'string' ? route.query.testset_name : ''
+  if (queryDocumentId) {
+    form.documentIds = [queryDocumentId]
+  }
+  if (queryTestsetName.trim()) {
+    form.name = queryTestsetName.trim()
+  }
+}
+
+const goToCreatedTestset = () => {
+  if (!createdTestsetId.value) return
+  const id = createdTestsetId.value
+  resetGenerationPage()
+  // replace 避免返回栈停留在旧的新建页状态
+  router.replace(`/testsets/${id}`)
+}
+
 // 查看详情
 const viewDetail = (row: any) => {
   currentQuestion.value = row
@@ -812,24 +848,19 @@ onMounted(async () => {
     initialLoading.value = false
   }
 
-  const queryDocumentId = typeof route.query.document_id === 'string' ? route.query.document_id : ''
-  const queryTestsetName = typeof route.query.testset_name === 'string' ? route.query.testset_name : ''
-  if (queryDocumentId) {
-    form.documentIds = [queryDocumentId]
-  }
-  if (queryTestsetName.trim()) {
-    form.name = queryTestsetName.trim()
-  }
-
+  resetGenerationPage()
+  applyRouteQuery()
   await loadTaxonomy()
+})
+
+onActivated(() => {
+  // keepAlive 场景：每次进入新建页默认重置，再按路由参数预填
+  resetGenerationPage()
+  applyRouteQuery()
 })
 
 onUnmounted(() => {
   stopPolling()
-  if (autoRedirectTimer) {
-    window.clearTimeout(autoRedirectTimer)
-    autoRedirectTimer = null
-  }
 })
 </script>
 
