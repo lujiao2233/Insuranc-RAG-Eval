@@ -1,7 +1,7 @@
 <template>
   <div class="dashboard-view">
     <el-row :gutter="20" class="stats-row">
-      <el-col :xs="24" :sm="12" :md="8">
+      <el-col :xs="24" :sm="12" :md="6">
         <el-card class="stat-card">
           <div class="stat-content">
             <div class="stat-icon" style="background: #409eff;">
@@ -15,7 +15,7 @@
         </el-card>
       </el-col>
       
-      <el-col :xs="24" :sm="12" :md="8">
+      <el-col :xs="24" :sm="12" :md="6">
         <el-card class="stat-card">
           <div class="stat-content">
             <div class="stat-icon" style="background: #67c23a;">
@@ -29,7 +29,7 @@
         </el-card>
       </el-col>
       
-      <el-col :xs="24" :sm="12" :md="8">
+      <el-col :xs="24" :sm="12" :md="6">
         <el-card class="stat-card">
           <div class="stat-content">
             <div class="stat-icon" style="background: #e6a23c;">
@@ -38,6 +38,20 @@
             <div class="stat-info">
               <div class="stat-value">{{ stats.totalEvaluations }}</div>
               <div class="stat-label">评估任务</div>
+            </div>
+          </div>
+        </el-card>
+      </el-col>
+
+      <el-col :xs="24" :sm="12" :md="6">
+        <el-card class="stat-card">
+          <div class="stat-content">
+            <div class="stat-icon" style="background: #9c27b0;">
+              <el-icon :size="24"><Coin /></el-icon>
+            </div>
+            <div class="stat-info">
+              <div class="stat-value">{{ stats.totalTokens }}</div>
+              <div class="stat-label">消耗 Token 数</div>
             </div>
           </div>
         </el-card>
@@ -128,10 +142,11 @@
 
 <script setup lang="ts">
 import { ref, onMounted } from 'vue'
-import { Document, Collection, DataLine, Upload, DocumentCopy } from '@element-plus/icons-vue'
+import { Document, Collection, DataLine, Upload, DocumentCopy, Coin } from '@element-plus/icons-vue'
 import { documentApi } from '@/api/documents'
 import { evaluationApi } from '@/api/evaluations'
 import { testsetApi } from '@/api/testsets'
+import { usageApi } from '@/api/usage'
 import { formatDate, formatDateTime } from '@/utils/format'
 import { useAuthStore } from '@/stores/auth'
 import type { Evaluation, TestSet } from '@/types'
@@ -141,7 +156,8 @@ const authStore = useAuthStore()
 const stats = ref({
   totalDocuments: 0,
   totalTestsets: 0,
-  totalEvaluations: 0
+  totalEvaluations: 0,
+  totalTokens: 0
 })
 
 const recentTestsets = ref<TestSet[]>([])
@@ -173,10 +189,11 @@ const fetchDashboardData = async () => {
   }
   
   try {
-    const [docStatsRes, testsetRes, evalRes] = await Promise.allSettled([
+    const [docStatsRes, testsetRes, evalRes, usageRes] = await Promise.allSettled([
       documentApi.getStats(),
       testsetApi.getTestSets({ limit: 5 }),
-      evaluationApi.getEvaluations({ limit: 5 })
+      evaluationApi.getEvaluations({ limit: 5 }),
+      usageApi.getStats(30)
     ])
     
     if (docStatsRes.status === 'fulfilled') {
@@ -199,6 +216,12 @@ const fetchDashboardData = async () => {
     } else {
       stats.value.totalEvaluations = 0
       recentEvaluations.value = []
+    }
+    
+    if (usageRes.status === 'fulfilled') {
+      stats.value.totalTokens = usageRes.value.data?.summary?.total_tokens || 0
+    } else {
+      stats.value.totalTokens = 0
     }
     
   } catch (error) {

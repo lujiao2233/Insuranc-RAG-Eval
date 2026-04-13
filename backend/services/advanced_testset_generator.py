@@ -33,6 +33,23 @@ def _invoke_llm(llm, prompt: str, stage: str = "", trace_id: str = "") -> str:
         result = llm.invoke(prompt)
         elapsed = time.time() - start_time
         logger.info(f"LLM调用完成: stage={stage_label}, trace={trace_label}, elapsed={elapsed:.2f}s")
+        
+        # 尝试记录Token
+        try:
+            if hasattr(result, 'response_metadata'):
+                token_usage = result.response_metadata.get("token_usage")
+                model_name = result.response_metadata.get("model_name", "unknown")
+                if token_usage:
+                    from services.llm_service import log_token_usage
+                    import threading
+                    threading.Thread(
+                        target=log_token_usage,
+                        args=("testset_gen", model_name, token_usage),
+                        daemon=True
+                    ).start()
+        except Exception as e:
+            logger.error(f"记录生成测试集Token使用失败: {e}")
+            
         if hasattr(result, 'content'):
             return result.content
         return str(result)

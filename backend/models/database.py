@@ -176,3 +176,16 @@ class Configuration(Base):
     updated_at = Column(DateTime, onupdate=func.now())
 
     user = relationship("User", back_populates="configurations")
+
+class ApiUsageLog(Base):
+    """记录LLM API调用的Token消耗流水"""
+    __tablename__ = "api_usage_logs"
+
+    id = Column(CHAR(36), primary_key=True, default=generate_uuid)
+    module_name = Column(String(50), nullable=False)  # 调用模块，如: document_analysis, testset_gen, evaluation
+    model_name = Column(String(50), nullable=False)   # 实际调用的模型名称，如: qwen3.5-plus
+    prompt_tokens = Column(Integer, default=0)
+    completion_tokens = Column(Integer, default=0)
+    total_tokens = Column(Integer, default=0)
+    cost = Column(String(20), default="0")            # 费用，使用字符串防止精度丢失
+    created_at = Column(DateTime, server_default=func.now())
