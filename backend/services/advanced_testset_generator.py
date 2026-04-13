@@ -42,9 +42,10 @@ def _invoke_llm(llm, prompt: str, stage: str = "", trace_id: str = "") -> str:
                 if token_usage:
                     from services.llm_service import log_token_usage
                     import threading
+                    latency_ms = int(elapsed * 1000)
                     threading.Thread(
                         target=log_token_usage,
-                        args=("testset_gen", model_name, token_usage),
+                        args=("testset_gen", model_name, token_usage, latency_ms),
                         daemon=True
                     ).start()
         except Exception as e:

@@ -187,5 +187,6 @@ class ApiUsageLog(Base):
     prompt_tokens = Column(Integer, default=0)
     completion_tokens = Column(Integer, default=0)
     total_tokens = Column(Integer, default=0)
+    latency_ms = Column(Integer, default=0)           # 请求耗时 (毫秒)
     cost = Column(String(20), default="0")            # 费用，使用字符串防止精度丢失
     created_at = Column(DateTime, server_default=func.now())

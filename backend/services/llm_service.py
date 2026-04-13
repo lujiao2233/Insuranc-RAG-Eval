@@ -17,8 +17,8 @@ from utils.logger import get_logger
 
 logger = get_logger("llm_service")
 
-def log_token_usage(module_name: str, model_name: str, usage: dict):
-    """异步或同步记录Token消耗到数据库"""
+def log_token_usage(module_name: str, model_name: str, usage: dict, latency_ms: int = 0):
+    """异步或同步记录Token消耗及耗时到数据库"""
     try:
         if not usage:
             return
@@ -31,10 +31,11 @@ def log_token_usage(module_name: str, model_name: str, usage: dict):
                 prompt_tokens=usage.get("prompt_tokens", 0),
                 completion_tokens=usage.get("completion_tokens", 0),
                 total_tokens=usage.get("total_tokens", 0),
+                latency_ms=latency_ms
             )
             db.add(log_entry)
             db.commit()
-            logger.info(f"Token使用记录成功: {module_name} ({model_name}) - {usage.get('total_tokens', 0)} tokens")
+            logger.info(f"Token使用记录成功: {module_name} ({model_name}) - {usage.get('total_tokens', 0)} tokens, {latency_ms}ms")
         finally:
             db.close()
     except Exception as e:
@@ -124,8 +125,9 @@ class QwenService(LLMServiceInterface):
                             logger.info(f"LLM请求成功: model={self.model}, duration={duration:.2f}s")
                             result = response.json()
                             usage = result.get("usage", {})
+                            latency_ms = int(duration * 1000)
                             # 异步记录以避免阻塞
-                            asyncio.create_task(asyncio.to_thread(log_token_usage, module_name, self.model, usage))
+                            asyncio.create_task(asyncio.to_thread(log_token_usage, module_name, self.model, usage, latency_ms))
                             return result["choices"][0]["message"]["content"]
                         else:
                             raise Exception(f"OpenAI兼容接口调用失败: {response.status_code} - {response.text}")
@@ -166,8 +168,9 @@ class QwenService(LLMServiceInterface):
                                     "completion_tokens": usage.get("output_tokens", 0),
                                     "total_tokens": usage.get("total_tokens", 0)
                                 }
+                            latency_ms = int(duration * 1000)
                             # 异步记录以避免阻塞
-                            asyncio.create_task(asyncio.to_thread(log_token_usage, module_name, self.model, usage))
+                            asyncio.create_task(asyncio.to_thread(log_token_usage, module_name, self.model, usage, latency_ms))
                             return result["output"]["text"]
                         else:
                             raise Exception(f"DashScope原生接口调用失败: {response.status_code} - {response.text}")
