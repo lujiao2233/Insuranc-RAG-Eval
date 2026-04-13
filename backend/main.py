@@ -5,7 +5,7 @@ import logging
 import os
 
 from config.settings import settings
-from api.routers import documents, testsets, evaluations, auth, config, analysis, reports
+from api.routers import documents, testsets, evaluations, auth, config, analysis, reports, usage
 from config.database import engine
 from models.database import Base
 from utils.logger import setup_logger
@@ -50,6 +50,7 @@ app.include_router(testsets.router, prefix="/api/v1/testsets", tags=["testsets"]
 app.include_router(evaluations.router, prefix="/api/v1/evaluations", tags=["evaluations"])
 app.include_router(reports.router, prefix="/api/v1/reports", tags=["reports"])
 app.include_router(config.router, prefix="/api/v1/config", tags=["config"])
+app.include_router(usage.router, prefix="/api/v1/usage", tags=["usage"])
 
 
 @app.get("/")

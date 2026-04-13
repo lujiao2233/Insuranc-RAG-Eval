@@ -8,9 +8,37 @@ import json
 
 
 from sqlalchemy.orm import Session
-from models.database import Configuration
+from models.database import Configuration, ApiUsageLog
+from config.database import SessionLocal
+import asyncio
+import httpx
+import time
+from utils.logger import get_logger
 
-class LLMServiceInterface(ABC):
+logger = get_logger("llm_service")
+
+def log_token_usage(module_name: str, model_name: str, usage: dict):
+    """异步或同步记录Token消耗到数据库"""
+    try:
+        if not usage:
+            return
+        
+        db = SessionLocal()
+        try:
+            log_entry = ApiUsageLog(
+                module_name=module_name,
+                model_name=model_name,
+                prompt_tokens=usage.get("prompt_tokens", 0),
+                completion_tokens=usage.get("completion_tokens", 0),
+                total_tokens=usage.get("total_tokens", 0),
+            )
+            db.add(log_entry)
+            db.commit()
+            logger.info(f"Token使用记录成功: {module_name} ({model_name}) - {usage.get('total_tokens', 0)} tokens")
+        finally:
+            db.close()
+    except Exception as e:
+        logger.error(f"记录Token使用失败: {e}")
     """LLM服务接口"""
     
     @abstractmethod
@@ -59,6 +87,7 @@ class QwenService(LLMServiceInterface):
         # 进一步放宽超时到 300 秒，处理复杂文档提纲
         timeout_value = kwargs.get("timeout", 300)
         retry_delay = 5  # 增加重试延迟
+        module_name = kwargs.get("module_name", "unknown") # 获取调用模块名称
         
         last_error = None
         # 使用 httpx.Timeout 精确控制各项超时
@@ -99,6 +128,9 @@ class QwenService(LLMServiceInterface):
                         if response.status_code == 200:
                             logger.info(f"LLM请求成功: model={self.model}, duration={duration:.2f}s")
                             result = response.json()
+                            usage = result.get("usage", {})
+                            # 异步记录以避免阻塞
+                            asyncio.create_task(asyncio.to_thread(log_token_usage, module_name, self.model, usage))
                             return result["choices"][0]["message"]["content"]
                         else:
                             raise Exception(f"OpenAI兼容接口调用失败: {response.status_code} - {response.text}")
@@ -129,6 +161,18 @@ class QwenService(LLMServiceInterface):
                         if response.status_code == 200:
                             logger.info(f"LLM请求成功: model={self.model}, duration={duration:.2f}s")
                             result = response.json()
+                            usage = result.get("usage", {})
+                            if not usage and "usage" in result.get("output", {}):
+                                usage = result["output"]["usage"]
+                            # 提取 DashScope 特定的 usage 格式 (input_tokens, output_tokens)
+                            if usage and "input_tokens" in usage:
+                                usage = {
+                                    "prompt_tokens": usage.get("input_tokens", 0),
+                                    "completion_tokens": usage.get("output_tokens", 0),
+                                    "total_tokens": usage.get("total_tokens", 0)
+                                }
+                            # 异步记录以避免阻塞
+                            asyncio.create_task(asyncio.to_thread(log_token_usage, module_name, self.model, usage))
                             return result["output"]["text"]
                         else:
                             raise Exception(f"DashScope原生接口调用失败: {response.status_code} - {response.text}")
@@ -156,7 +200,7 @@ class QwenService(LLMServiceInterface):
         prompt = task_prompts.get(task, task_prompts["summarize"]).format(text=text)
         
         try:
-            result = await self.generate_text(prompt)
+            result = await self.generate_text(prompt, module_name="document_analysis")
             return {
                 "task": task,
                 "result": result,
@@ -196,7 +240,7 @@ class QwenService(LLMServiceInterface):
 """
         
         try:
-            result = await self.generate_text(prompt)
+            result = await self.generate_text(prompt, module_name="metadata_extraction")
             # 尝试解析JSON
             try:
                 metadata = json.loads(result)
@@ -242,7 +286,7 @@ class QwenService(LLMServiceInterface):
 """
         
         try:
-            result = await self.generate_text(prompt)
+            result = await self.generate_text(prompt, module_name="outline_generation")
             # 尝试解析JSON
             try:
                 outline = json.loads(result)
