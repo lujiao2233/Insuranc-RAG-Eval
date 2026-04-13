@@ -80,6 +80,7 @@ export const documentApi = {
       filename: string
       status: string
       message: string
+      task_id?: string
     }>
     total: number
   }> {

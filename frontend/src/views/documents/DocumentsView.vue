@@ -271,6 +271,60 @@ let pollingTimer: any = null
 let pollingStartedAt = 0
 const MAX_POLLING_DURATION_MS = 15 * 60 * 1000
 
+const updateDocumentTasksByTarget = (
+  documentId: string,
+  updates: { progress?: number; status?: 'running' | 'completed' | 'failed'; error?: string }
+) => {
+  const matchedTasks = taskStore.tasks.filter(
+    task => task.type === 'document' && task.targetId === documentId
+  )
+  matchedTasks.forEach(task => taskStore.updateTask(task.id, updates))
+}
+
+const pollDocumentTaskStatus = (taskId: string, documentId: string) => {
+  const poll = async () => {
+    const currentTask = taskStore.getTask(taskId)
+    if (!currentTask || (currentTask.status !== 'running' && currentTask.status !== 'pending')) {
+      return
+    }
+
+    try {
+      const task = await documentApi.getTaskStatus(taskId)
+      if (typeof task.progress === 'number') {
+        taskStore.updateTask(taskId, { progress: Math.round(task.progress * 100) })
+      }
+
+      if (task.status === 'finished') {
+        isAnalyzing.value[documentId] = false
+        taskStore.updateTask(taskId, { progress: 100, status: 'completed' })
+        await documentStore.fetchDocuments({
+          status: statusFilter.value === 'unanalyzed' ? 'active' : (statusFilter.value || undefined),
+          is_analyzed: statusFilter.value === 'unanalyzed' ? false : (statusFilter.value === 'active' ? true : undefined),
+          category: categoryFilter.value || undefined
+        })
+        return
+      }
+
+      if (task.status === 'failed') {
+        isAnalyzing.value[documentId] = false
+        taskStore.updateTask(taskId, { status: 'failed', error: task.error || '文档分析失败' })
+        await documentStore.fetchDocuments({
+          status: statusFilter.value === 'unanalyzed' ? 'active' : (statusFilter.value || undefined),
+          is_analyzed: statusFilter.value === 'unanalyzed' ? false : (statusFilter.value === 'active' ? true : undefined),
+          category: categoryFilter.value || undefined
+        })
+        return
+      }
+    } catch {
+      // 忽略单次查询失败，继续重试
+    }
+
+    window.setTimeout(poll, 2000)
+  }
+
+  poll()
+}
+
 const startPolling = () => {
   if (pollingTimer) return
   pollingStartedAt = Date.now()
@@ -283,7 +337,7 @@ const startPolling = () => {
         .filter(doc => doc.status === 'processing')
         .forEach(doc => {
           isAnalyzing.value[doc.id] = false
-          taskStore.updateTask(doc.id, { status: 'failed', error: '文档解析超时，请重试' })
+          updateDocumentTasksByTarget(doc.id, { status: 'failed', error: '文档解析超时，请重试' })
         })
       ElMessage.warning('文档解析超时，已停止自动轮询，请刷新后重试解析')
       return
@@ -331,9 +385,9 @@ watch(() => documentStore.documents, (newDocs, oldDocs) => {
         if (oldDoc.status === 'processing' && newDoc.status !== 'processing') {
           isAnalyzing.value[newDoc.id] = false
           if (newDoc.is_analyzed) {
-            taskStore.updateTask(newDoc.id, { progress: 100, status: 'completed' })
+            updateDocumentTasksByTarget(newDoc.id, { progress: 100, status: 'completed' })
           } else {
-            taskStore.updateTask(newDoc.id, { status: 'failed', error: '文档分析失败或被中断' })
+            updateDocumentTasksByTarget(newDoc.id, { status: 'failed', error: '文档分析失败或被中断' })
           }
         }
       }
@@ -485,16 +539,18 @@ const handleBatchAnalyze = async () => {
     const documentIds = unanalyzedDocs.map(doc => doc.id)
     const result = await documentApi.analyzeDocumentsBatch(documentIds)
     
-    // 添加批量分析任务到全局任务列表
-    unanalyzedDocs.forEach(doc => {
+    // 添加批量分析任务到全局任务列表（使用真实 task_id）
+    result.results.forEach(item => {
+      if (item.status !== 'processing' || !item.task_id) return
       taskStore.addTask({
-        id: doc.id,
-        name: `解析文档: ${doc.filename}`,
+        id: item.task_id,
+        name: `解析文档: ${item.filename}`,
         type: 'document',
         progress: 0,
         status: 'running',
-        targetId: doc.id
+        targetId: item.document_id
       })
+      pollDocumentTaskStatus(item.task_id, item.document_id)
     })
 
     ElMessage.success(result.message)
@@ -560,13 +616,14 @@ const analyzeDocument = async (doc: Document) => {
     
     // 添加到全局任务列表
     taskStore.addTask({
-      id: doc.id, // 使用文档ID作为任务ID，因为文档解析没有独立的task_id返回
+      id: result.task_id,
       name: `解析文档: ${doc.filename}`,
       type: 'document',
       progress: 0,
       status: 'running',
       targetId: doc.id
     })
+    pollDocumentTaskStatus(result.task_id, doc.id)
     
     ElMessage.success(result.message || '文档分析已启动')
     
@@ -577,7 +634,7 @@ const analyzeDocument = async (doc: Document) => {
   } finally {
     // 注意：如果是异步任务，不要立即移除按钮加载状态，让轮询来接管
     // 只有在同步出错时才重置状态
-    if (!taskStore.getTask(doc.id)) {
+    if (!taskStore.tasks.some(task => task.type === 'document' && task.targetId === doc.id && (task.status === 'running' || task.status === 'pending'))) {
       isAnalyzing.value[doc.id] = false
     }
   }

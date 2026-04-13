@@ -121,12 +121,13 @@ class DocumentService:
                 "message": f"处理文档时出错: {str(e)}"
             }
     
-    async def analyze_document(self, document: DocumentModel, db: Any = None) -> Dict[str, Any]:
+    async def analyze_document(self, document: DocumentModel, db: Any = None, task_id: Optional[str] = None) -> Dict[str, Any]:
         """执行文档分析的核心逻辑（提取 -> 提纲 -> 切片 -> 实体）"""
         from config.database import SessionLocal
         from models.database import DocumentChunk
         from services.llm_service import get_llm_service
         from services.question_generator import get_question_generator
+        from services.task_manager import task_manager
         
         own_db = False
         if db is None:
@@ -134,6 +135,8 @@ class DocumentService:
             own_db = True
             
         try:
+            if task_id:
+                task_manager.update_progress(task_id, 0.25, "开始文本提取...")
             # 1. 文本提取
             processed_doc = self.document_processor.process_file(document.file_path)
             if not processed_doc or not processed_doc.get("text_content"):
@@ -146,6 +149,8 @@ class DocumentService:
             llm_service = get_llm_service(user_id=document.user_id, db=db)
             
             # 2. 智能提纲与实体提取
+            if task_id:
+                task_manager.update_progress(task_id, 0.35, "正在调用LLM提取提纲与元数据...")
             analysis_result = await self.metadata_extractor.extract(text_content, llm=llm_service)
             if not analysis_result or not analysis_result.get("outline"):
                 return {"success": False, "message": "智能提纲提取失败"}
@@ -174,6 +179,8 @@ class DocumentService:
             document.file_type = doc_type if doc_type != "其他" else document.file_type
             
             # 3. 语义切片与向量化
+            if task_id:
+                task_manager.update_progress(task_id, 0.55, "正在进行语义切片...")
             self.chunking_service.llm = llm_service
             chunks = await self.chunking_service.chunk_document(
                 text_content, 
@@ -188,14 +195,25 @@ class DocumentService:
                 try:
                     chunk_texts = [c["content"] for c in chunks]
                     batch_size = 10
+                    total_batches = (len(chunk_texts) + batch_size - 1) // batch_size
                     for i in range(0, len(chunk_texts), batch_size):
                         batch = chunk_texts[i:i+batch_size]
+                        if task_id:
+                            current_batch = i // batch_size + 1
+                            progress = 0.65 + 0.2 * (current_batch / max(total_batches, 1))
+                            task_manager.update_progress(
+                                task_id,
+                                progress,
+                                f"正在向量化切片（第 {current_batch}/{total_batches} 批）..."
+                            )
                         vectors = await generator.get_embeddings(batch)
                         all_vectors.extend(vectors)
                 except Exception as e:
                     logger.error(f"获取切片向量失败: {e}")
             
             # 清除旧切片
+            if task_id:
+                task_manager.update_progress(task_id, 0.9, "正在写入切片与索引...")
             db.query(DocumentChunk).filter(DocumentChunk.document_id == document.id).delete()
             
             # 将切片存入数据库
@@ -217,6 +235,8 @@ class DocumentService:
             document.is_analyzed = True
             document.status = 'active'
             document.analyzed_at = datetime.now()
+            if task_id:
+                task_manager.update_progress(task_id, 0.98, "即将完成...")
             
             if own_db:
                 db.commit()
@@ -249,7 +269,7 @@ class DocumentService:
 
             # 直接调用核心分析逻辑
             task_manager.update_progress(task_id, 0.2, "正在提取文本并进行语义分析...")
-            result = await self.analyze_document(document, db=db)
+            result = await self.analyze_document(document, db=db, task_id=task_id)
             
             if result["success"]:
                 db.commit() # 关键：提交 analyze_document 中的更改
