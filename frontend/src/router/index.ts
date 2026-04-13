@@ -30,6 +30,12 @@ const routes: RouteRecordRaw[] = [
         meta: { title: '仪表盘', keepAlive: true }
       },
       {
+        path: 'usage',
+        name: 'Usage',
+        component: () => import('@/views/usage/UsageView.vue'),
+        meta: { title: '用量统计', keepAlive: true }
+      },
+      {
         path: 'documents',
         name: 'Documents',
         component: () => import('@/views/documents/DocumentsView.vue'),

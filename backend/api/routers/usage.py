@@ -1,7 +1,7 @@
 from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlalchemy.orm import Session
-from sqlalchemy import func, desc
-from typing import Dict, Any, List
+from sqlalchemy import func
+from typing import Dict, Any, List, Optional
 from datetime import datetime, timedelta
 
 from config.database import get_db
@@ -86,3 +86,48 @@ async def get_usage_stats(
         import traceback
         traceback.print_exc()
         raise HTTPException(status_code=500, detail=f"获取统计数据失败: {str(e)}")
+
+
+@router.get("/events", response_model=Dict[str, Any])
+async def get_usage_events(
+    start: Optional[datetime] = Query(None, description="开始时间（ISO8601）"),
+    end: Optional[datetime] = Query(None, description="结束时间（ISO8601）"),
+    limit: int = Query(2000, ge=1, le=20000, description="返回事件条数上限"),
+    module_name: Optional[str] = Query(None, description="按模块过滤"),
+    model_name: Optional[str] = Query(None, description="按模型过滤"),
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db)
+):
+    try:
+        end_dt = end or datetime.utcnow()
+        start_dt = start or (end_dt - timedelta(hours=24))
+
+        q = db.query(ApiUsageLog).filter(
+            ApiUsageLog.created_at >= start_dt,
+            ApiUsageLog.created_at <= end_dt
+        )
+        if module_name:
+            q = q.filter(ApiUsageLog.module_name == module_name)
+        if model_name:
+            q = q.filter(ApiUsageLog.model_name == model_name)
+
+        rows = q.order_by(ApiUsageLog.created_at.asc()).limit(limit).all()
+
+        data = [
+            {
+                "timestamp": row.created_at.isoformat(),
+                "module": row.module_name,
+                "model": row.model_name,
+                "prompt_tokens": row.prompt_tokens,
+                "completion_tokens": row.completion_tokens,
+                "total_tokens": row.total_tokens,
+                "latency_ms": row.latency_ms
+            }
+            for row in rows
+        ]
+
+        return {"success": True, "data": data}
+    except Exception as e:
+        import traceback
+        traceback.print_exc()
+        raise HTTPException(status_code=500, detail=f"获取调用明细失败: {str(e)}")

@@ -11,6 +11,11 @@
         <el-icon><House /></el-icon>
         <span>仪表板</span>
       </el-menu-item>
+
+      <el-menu-item index="/usage">
+        <el-icon><DataAnalysis /></el-icon>
+        <span>用量统计</span>
+      </el-menu-item>
       
       <el-sub-menu index="/documents">
         <template #title>
@@ -50,6 +55,7 @@
 <script>
 import { 
   House, 
+  DataAnalysis,
   Document, 
   Collection, 
   Histogram, 
@@ -69,6 +75,7 @@ export default {
   setup() {
     return {
       House,
+      DataAnalysis,
       Document,
       Collection,
       Histogram,
