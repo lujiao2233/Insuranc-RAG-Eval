@@ -39,35 +39,30 @@ def log_token_usage(module_name: str, model_name: str, usage: dict):
             db.close()
     except Exception as e:
         logger.error(f"记录Token使用失败: {e}")
+
+
+class LLMServiceInterface(ABC):
     """LLM服务接口"""
-    
+
     @abstractmethod
     async def generate_text(self, prompt: str, **kwargs) -> str:
         """生成文本"""
         pass
-    
+
     @abstractmethod
     async def analyze_document(self, text: str, task: str = "summarize") -> Dict[str, Any]:
         """分析文档"""
         pass
-    
+
     @abstractmethod
     async def extract_metadata(self, text: str) -> Dict[str, Any]:
         """提取元数据"""
         pass
-    
+
     @abstractmethod
     async def generate_outline(self, text: str) -> List[Dict[str, Any]]:
         """生成大纲"""
         pass
-
-
-import asyncio
-import httpx
-import time
-from utils.logger import get_logger
-
-logger = get_logger("llm_service")
 
 class QwenService(LLMServiceInterface):
     """Qwen模型服务"""
