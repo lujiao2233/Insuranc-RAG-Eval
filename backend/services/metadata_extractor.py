@@ -50,7 +50,11 @@ class MetadataExtractor:
         try:
             # 统一使用异步调用，增加 max_tokens 以处理全文提纲
             if hasattr(target_llm, 'generate_text'):
-                response = await target_llm.generate_text(prompt, max_tokens=16000)
+                response = await target_llm.generate_text(
+                    prompt,
+                    max_tokens=16000,
+                    module_name="metadata_extraction"
+                )
             elif hasattr(target_llm, 'ainvoke'):
                 response = await target_llm.ainvoke(prompt)
             elif hasattr(target_llm, 'invoke'):

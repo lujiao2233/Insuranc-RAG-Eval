@@ -43,7 +43,7 @@ def create_user(db: Session, user_data: UserCreate) -> UserModel:
         email=user_data.email,
         password_hash=hashed_password,
         full_name=user_data.full_name,
-        created_at=datetime.utcnow(),
+        created_at=datetime.now(),
         is_active=True
     )
     db.add(user)

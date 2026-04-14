@@ -506,7 +506,9 @@ const handleDownload = async () => {
 
 const createTestset = () => {
   if (!document.value?.id) return
-  const fallbackName = `测试集_${new Date().toISOString().slice(0, 19).replace(/:/g, '-')}`
+  const now = new Date()
+  const pad = (n: number) => String(n).padStart(2, '0')
+  const fallbackName = `测试集_${now.getFullYear()}-${pad(now.getMonth() + 1)}-${pad(now.getDate())}_${pad(now.getHours())}-${pad(now.getMinutes())}-${pad(now.getSeconds())}`
   const filename = String(document.value.filename || '')
   const dotIndex = filename.lastIndexOf('.')
   const baseName = dotIndex > 0 ? filename.slice(0, dotIndex) : filename

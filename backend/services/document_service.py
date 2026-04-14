@@ -66,8 +66,8 @@ class DocumentService:
             file_type=document_data.file_type,
             file_size=document_data.file_size,
             category=document_data.category,
-            upload_time=datetime.utcnow(),
-            created_at=datetime.utcnow(),
+            upload_time=datetime.now(),
+            created_at=datetime.now(),
             is_processed=False,
             is_analyzed=False,
             metadata=None
@@ -100,7 +100,7 @@ class DocumentService:
                     "outline": metadata.get("outline", []),
                     "metadata": metadata,
                     "chunks_count": len(chunks),
-                    "processed_at": datetime.utcnow().isoformat()
+                    "processed_at": datetime.now().isoformat()
                 }
                 
                 return {

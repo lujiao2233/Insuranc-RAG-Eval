@@ -501,39 +501,53 @@ class RagasEvaluator:
             def generate(self, prompt: str) -> str:
                 import time
                 start_time = time.time()
-                client = self.load_model()
-                completion = client.chat.completions.create(
-                    model=self.model,
-                    messages=[
-                        {"role": "system", "content": "You are an evaluation assistant. Respond with only valid JSON."},
-                        {"role": "user", "content": prompt},
-                    ],
-                    temperature=self.temperature,
-                    max_tokens=self.max_tokens,
-                )
-                latency_ms = int((time.time() - start_time) * 1000)
-                if completion and completion.choices:
-                    content = completion.choices[0].message.content or ""
-                    # 记录Token使用情况
-                    if hasattr(completion, "usage") and completion.usage:
-                        try:
-                            from services.llm_service import log_token_usage
-                            import threading
-                            usage_dict = {
-                                "prompt_tokens": completion.usage.prompt_tokens,
-                                "completion_tokens": completion.usage.completion_tokens,
-                                "total_tokens": completion.usage.total_tokens
-                            }
-                            # 使用线程异步记录
-                            threading.Thread(
-                                target=log_token_usage,
-                                args=("evaluation", self.model, usage_dict, latency_ms),
-                                daemon=True
-                            ).start()
-                        except Exception as e:
-                            logger.error(f"记录评估Token使用失败: {e}")
-                    return self._ensure_valid_json(content.strip())
-                return self._ensure_valid_json("")
+                try:
+                    client = self.load_model()
+                    completion = client.chat.completions.create(
+                        model=self.model,
+                        messages=[
+                            {"role": "system", "content": "You are an evaluation assistant. Respond with only valid JSON."},
+                            {"role": "user", "content": prompt},
+                        ],
+                        temperature=self.temperature,
+                        max_tokens=self.max_tokens,
+                    )
+                    latency_ms = int((time.time() - start_time) * 1000)
+                    if completion and completion.choices:
+                        content = completion.choices[0].message.content or ""
+                        # 记录Token使用情况
+                        if hasattr(completion, "usage") and completion.usage:
+                            try:
+                                from services.llm_service import log_token_usage
+                                import threading
+                                usage_dict = {
+                                    "prompt_tokens": completion.usage.prompt_tokens,
+                                    "completion_tokens": completion.usage.completion_tokens,
+                                    "total_tokens": completion.usage.total_tokens
+                                }
+                                # 使用线程异步记录
+                                threading.Thread(
+                                    target=log_token_usage,
+                                    args=("evaluation", self.model, usage_dict, latency_ms),
+                                    daemon=True
+                                ).start()
+                            except Exception as e:
+                                logger.error(f"记录评估Token使用失败: {e}")
+                        return self._ensure_valid_json(content.strip())
+                    return self._ensure_valid_json("")
+                except Exception as err:
+                    latency_ms = int((time.time() - start_time) * 1000)
+                    try:
+                        from services.llm_service import log_token_usage
+                        import threading
+                        threading.Thread(
+                            target=log_token_usage,
+                            args=("evaluation", self.model, {}, latency_ms, True, str(err)),
+                            daemon=True
+                        ).start()
+                    except Exception as le:
+                        logger.error(f"记录评估错误Token使用失败: {le}")
+                    raise err
 
             async def a_generate(self, prompt: str) -> str:
                 return self.generate(prompt)

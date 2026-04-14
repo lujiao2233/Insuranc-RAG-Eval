@@ -361,9 +361,15 @@ const router = useRouter()
 const route = useRoute()
 const taskStore = useTaskStore()
 
+const buildLocalNameStamp = () => {
+  const now = new Date()
+  const pad = (n: number) => String(n).padStart(2, '0')
+  return `${now.getFullYear()}-${pad(now.getMonth() + 1)}-${pad(now.getDate())}_${pad(now.getHours())}-${pad(now.getMinutes())}-${pad(now.getSeconds())}`
+}
+
 // 表单数据
 const form = reactive({
-  name: `测试集_${new Date().toISOString().slice(0, 19).replace(/:/g, '-')}`,
+  name: `测试集_${buildLocalNameStamp()}`,
   documentIds: [] as string[],
   questionsPerDoc: 10,
   enableRobustnessInputQuality: false,
@@ -766,7 +772,7 @@ const resetGenerationPage = () => {
   createdTestsetId.value = null
   generatedQuestions.value = []
   lastSubmitPayload.value = null
-  form.name = `测试集_${new Date().toISOString().slice(0, 19).replace(/:/g, '-')}`
+  form.name = `测试集_${buildLocalNameStamp()}`
   form.documentIds = []
   form.questionsPerDoc = 10
   form.enableRobustnessInputQuality = false
@@ -831,7 +837,9 @@ const exportCSV = () => {
   const url = URL.createObjectURL(blob)
   const link = document.createElement('a')
   link.href = url
-  link.download = `测试集_${new Date().toISOString().slice(0, 10)}.csv`
+  const now = new Date()
+  const pad = (n: number) => String(n).padStart(2, '0')
+  link.download = `测试集_${now.getFullYear()}-${pad(now.getMonth() + 1)}-${pad(now.getDate())}.csv`
   link.click()
   URL.revokeObjectURL(url)
   

@@ -193,7 +193,7 @@ async def upload_document(
         category=category,
         status='active',
         is_analyzed=False,
-        upload_time=datetime.utcnow()
+        upload_time=datetime.now()
     )
     
     db.add(document)

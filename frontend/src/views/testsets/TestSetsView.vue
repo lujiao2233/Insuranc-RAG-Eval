@@ -473,7 +473,12 @@ const progressInfo = reactive({
 // 生成的问题
 const generatedQuestions = ref<any[]>([])
 
-const getDefaultTestsetName = () => `测试集_${new Date().toISOString().slice(0, 19).replace(/:/g, '-')}`
+const getDefaultTestsetName = () => {
+  const now = new Date()
+  const pad = (n: number) => String(n).padStart(2, '0')
+  const ts = `${now.getFullYear()}-${pad(now.getMonth() + 1)}-${pad(now.getDate())}_${pad(now.getHours())}-${pad(now.getMinutes())}-${pad(now.getSeconds())}`
+  return `测试集_${ts}`
+}
 
 // 生成表单
 const generationForm = reactive({

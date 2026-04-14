@@ -13,15 +13,18 @@ from config.database import SessionLocal
 import asyncio
 import httpx
 import time
+from datetime import datetime
 from utils.logger import get_logger
 
 logger = get_logger("llm_service")
 
-def log_token_usage(module_name: str, model_name: str, usage: dict, latency_ms: int = 0):
+def log_token_usage(module_name: str, model_name: str, usage: dict, latency_ms: int = 0, is_error: bool = False, error_msg: str = None):
     """异步或同步记录Token消耗及耗时到数据库"""
     try:
-        if not usage:
+        if not usage and not is_error:
             return
+        
+        usage = usage or {}
         
         db = SessionLocal()
         try:
@@ -31,11 +34,18 @@ def log_token_usage(module_name: str, model_name: str, usage: dict, latency_ms: 
                 prompt_tokens=usage.get("prompt_tokens", 0),
                 completion_tokens=usage.get("completion_tokens", 0),
                 total_tokens=usage.get("total_tokens", 0),
-                latency_ms=latency_ms
+                latency_ms=latency_ms,
+                is_error=is_error,
+                error_msg=error_msg,
+                # 显式写入应用本地时间，避免数据库时区设置导致展示偏移
+                created_at=datetime.now()
             )
             db.add(log_entry)
             db.commit()
-            logger.info(f"Token使用记录成功: {module_name} ({model_name}) - {usage.get('total_tokens', 0)} tokens, {latency_ms}ms")
+            if is_error:
+                logger.error(f"Token使用记录异常: {module_name} ({model_name}) - 耗时 {latency_ms}ms - 错误: {error_msg}")
+            else:
+                logger.info(f"Token使用记录成功: {module_name} ({model_name}) - {usage.get('total_tokens', 0)} tokens, {latency_ms}ms")
         finally:
             db.close()
     except Exception as e:
@@ -185,7 +195,10 @@ class QwenService(LLMServiceInterface):
                     else:
                         break
         
-        raise Exception(f"LLM生成文本最终失败，重试 {max_retries} 次后错误: {str(last_error)}")
+        # 如果重试耗尽仍然失败，记录失败日志
+        error_msg = f"LLM生成文本最终失败，重试 {max_retries} 次后错误: {str(last_error)}"
+        asyncio.create_task(asyncio.to_thread(log_token_usage, module_name, self.model, {}, 0, is_error=True, error_msg=error_msg))
+        raise Exception(error_msg)
     
     async def analyze_document(self, text: str, task: str = "summarize") -> Dict[str, Any]:
         """分析文档"""

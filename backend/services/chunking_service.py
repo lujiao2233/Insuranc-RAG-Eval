@@ -92,7 +92,12 @@ class GeneralChunkingStrategy(BaseChunkingStrategy):
 }}
 """
         try:
-            response = await self.llm.generate_text(prompt, max_tokens=1000, temperature=0.1)
+            response = await self.llm.generate_text(
+                prompt,
+                max_tokens=1000,
+                temperature=0.1,
+                module_name="document_analysis"
+            )
             text_response = str(response).strip()
             if "```json" in text_response:
                 text_response = text_response.split("```json")[1].split("```")[0]
@@ -296,7 +301,12 @@ class TableDataStrategy(GeneralChunkingStrategy):
 {text}
 """
         try:
-            response = await self.llm.generate_text(prompt, max_tokens=2000, temperature=0.1)
+            response = await self.llm.generate_text(
+                prompt,
+                max_tokens=2000,
+                temperature=0.1,
+                module_name="document_analysis"
+            )
             text_response = str(response).strip()
             if "```json" in text_response:
                 text_response = text_response.split("```json")[1].split("```")[0]
@@ -698,7 +708,12 @@ class ChunkingService:
             return ["事实陈述"]
 
         try:
-            response = await self.llm.generate_text(prompt, max_tokens=100, temperature=0.1)
+            response = await self.llm.generate_text(
+                prompt,
+                max_tokens=100,
+                temperature=0.1,
+                module_name="document_analysis"
+            )
             text_response = str(response).strip()
             
             # 提取 JSON 数组

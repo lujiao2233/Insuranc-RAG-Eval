@@ -204,7 +204,7 @@ class ConfigService:
             config.config_value = value_str
             if description:
                 config.config_description = description
-            config.updated_at = datetime.utcnow()
+            config.updated_at = datetime.now()
         else:
             if not description and config_key in DEFAULT_CONFIGS:
                 description = DEFAULT_CONFIGS[config_key].get("description")
