@@ -61,10 +61,8 @@ class GeneralChunkingStrategy(BaseChunkingStrategy):
     """通用语义切片策略"""
     
     async def chunk(self, text: str, chunk_size: int, section_meta: Dict[str, Any]) -> List[Dict[str, Any]]:
-        if not self.llm or len(text) > 8000:
-            return self._fallback_semantic_split(text, chunk_size)
-            
-        return await self._semantic_split_with_llm(text, chunk_size, section_meta)
+        # 移除昂贵的LLM语义边界寻找，直接使用稳健的本地语义规则切分，大幅提高吞吐量并节省Token
+        return self._fallback_semantic_split(text, chunk_size)
 
     async def _semantic_split_with_llm(self, text, target_size, section_meta):
         """调用LLM寻找最佳语义切分点"""
@@ -670,70 +668,40 @@ class ChunkingService:
         }
 
     async def _normalize_or_infer_knowledge_type(self, value: Any, text: str, section_meta: Dict[str, Any]) -> List[str]:
+        # 使用基于关键字的启发式推断代替昂贵的LLM分类
         valid_types = ["概念定义", "规则约束", "流程操作", "数据数值", "触发条件", "事实陈述", "异常除外"]
         
-        # 截取合理的文本长度，防止LLM token超限
-        sample_text = str(text or "")[:1500]
+        sample_text = str(text or "")[:500]
         if not sample_text.strip():
             return ["事实陈述"]
             
         section_title = section_meta.get("title", "")
-        breadcrumb_path = section_meta.get("breadcrumb_path", "")
         
-        prompt = f"""
-你是一个专业的保险与制度文档知识分类专家。
-请根据以下文本内容及其所在的章节上下文，判断该文本属于哪些知识类型。
-
-可选的知识类型列表：
-{json.dumps(valid_types, ensure_ascii=False)}
-
-文本上下文：
-- 章节标题: {section_title}
-- 章节路径: {breadcrumb_path}
-
-待分类文本内容：
-{sample_text}
-
-要求：
-1. 文本可能同时具备多种知识类型，请返回一个数组，包含所有符合的知识类型。
-2. 如果文本没有明显的上述特征，请返回 ["事实陈述"]。
-3. 请只返回 JSON 数组格式，不要包含任何其他文字。
-
-返回格式示例：
-["触发条件", "规则约束"]
-"""
+        result_types = set()
         
-        if not self.llm:
-            logger.warning("未配置 LLM，退回默认单标签分类")
-            return ["事实陈述"]
-
-        try:
-            response = await self.llm.generate_text(
-                prompt,
-                max_tokens=100,
-                temperature=0.1,
-                module_name="document_analysis"
-            )
-            text_response = str(response).strip()
+        # 关键字匹配规则
+        if any(kw in sample_text or kw in section_title for kw in ["定义", "是指", "即为", "含义"]):
+            result_types.add("概念定义")
             
-            # 提取 JSON 数组
-            if "```json" in text_response:
-                text_response = text_response.split("```json")[1].split("```")[0]
-            elif "```" in text_response:
-                text_response = text_response.split("```")[1].split("```")[0]
-                
-            types = json.loads(text_response)
+        if any(kw in sample_text or kw in section_title for kw in ["应当", "必须", "禁止", "不得", "要求"]):
+            result_types.add("规则约束")
             
-            if isinstance(types, list) and len(types) > 0:
-                # 过滤出在 valid_types 中的类型
-                filtered_types = [t for t in types if t in valid_types]
-                if filtered_types:
-                    return filtered_types
+        if any(kw in sample_text or kw in section_title for kw in ["步骤", "流程", "程序", "如何", "操作", "第一步"]):
+            result_types.add("流程操作")
             
-            return ["事实陈述"]
-        except Exception as e:
-            logger.error(f"LLM 知识类型分类失败: {e}")
-            return ["事实陈述"]
+        if any(kw in sample_text for kw in ["率", "%", "金额", "人民币", "元"]):
+            result_types.add("数据数值")
+            
+        if any(kw in sample_text or kw in section_title for kw in ["如果", "当", "若", "发生", "前提", "条件"]):
+            result_types.add("触发条件")
+            
+        if any(kw in sample_text or kw in section_title for kw in ["除外", "不包括", "免责", "异常", "不承担"]):
+            result_types.add("异常除外")
+            
+        if not result_types:
+            result_types.add("事实陈述")
+            
+        return list(result_types)
 
     def _is_complete_sentence_end(self, text: str) -> bool:
         t = str(text or "").strip()
