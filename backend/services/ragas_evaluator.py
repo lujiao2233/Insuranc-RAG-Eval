@@ -114,6 +114,9 @@ class RagasEvaluator:
                 "faithfulness",
                 "answer_correctness",
                 "answer_similarity",
+                "context_precision",
+                "context_entity_recall",
+                "summarization_score",
             ],
             "batch_size": 5,
             "timeout": 300,
@@ -477,6 +480,8 @@ class RagasEvaluator:
             AnswerRelevancyMetric,
             FaithfulnessMetric,
             ContextualRelevancyMetric,
+            ContextualPrecisionMetric,
+            SummarizationMetric,
             HallucinationMetric,
             ToxicityMetric,
             BiasMetric,
@@ -587,6 +592,8 @@ class RagasEvaluator:
             "answer_relevance": AnswerRelevancyMetric,
             "faithfulness": FaithfulnessMetric,
             "context_relevance": ContextualRelevancyMetric,
+            "context_precision": ContextualPrecisionMetric,
+            "summarization_score": SummarizationMetric,
             "hallucination": HallucinationMetric,
             "toxicity": ToxicityMetric,
             "bias": BiasMetric,
@@ -711,6 +718,9 @@ class RagasEvaluator:
                 AnswerCorrectness,
                 AnswerSimilarity,
                 ContextRecall,
+                ContextPrecision,
+                ContextEntityRecall,
+                SummarizationScore,
             )
 
             class_map = {
@@ -719,6 +729,9 @@ class RagasEvaluator:
                 "faithfulness": Faithfulness,
                 "answer_correctness": AnswerCorrectness,
                 "answer_similarity": AnswerSimilarity,
+                "context_precision": ContextPrecision,
+                "context_entity_recall": ContextEntityRecall,
+                "summarization_score": SummarizationScore,
             }
             out = []
             for m in metrics:
@@ -737,6 +750,8 @@ class RagasEvaluator:
                     answer_correctness,
                     answer_similarity,
                     context_recall,
+                    context_precision,
+                    context_entity_recall,
                 )
 
                 func_map = {
@@ -745,6 +760,8 @@ class RagasEvaluator:
                     "faithfulness": faithfulness,
                     "answer_correctness": answer_correctness,
                     "answer_similarity": answer_similarity,
+                    "context_precision": context_precision,
+                    "context_entity_recall": context_entity_recall,
                 }
                 return [func_map[m] for m in metrics if m in func_map]
             except Exception as e:
@@ -797,6 +814,9 @@ class RagasEvaluator:
                 "faithfulness": 0.2,
                 "answer_correctness": 0.2,
                 "answer_similarity": 0.2,
+                "context_precision": 0.1,
+                "context_entity_recall": 0.1,
+                "summarization_score": 0.1,
             }
             
             weighted_score = 0.0
