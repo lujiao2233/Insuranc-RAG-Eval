@@ -8,7 +8,6 @@ from typing import List, Optional, Dict, Any
 from uuid import UUID
 import os
 import uuid
-import asyncio
 from datetime import datetime
 from pathlib import Path
 
@@ -111,16 +110,13 @@ async def get_document(
         document.status = 'processing'
         db.commit()
         
-        task_id = task_manager.create_task(
+        task_id = task_manager.submit_task(
             task_type="document_analysis",
-            params={"document_id": str(document_id)}
+            params={
+                "document_id": str(document_id),
+                "user_id": str(current_user.id),
+            }
         )
-        
-        # 启动异步任务
-        import asyncio
-        from services.document_service import DocumentService
-        ds = DocumentService()
-        asyncio.create_task(ds.analyze_document_task(str(document_id), str(current_user.id), task_id))
     
     doc_data = Document.from_orm(document).dict()
     if not doc_data.get("page_count"):
@@ -206,11 +202,13 @@ async def upload_document(
             document.status = 'processing'
             db.commit()
             
-            task_id = task_manager.create_task(
+            task_id = task_manager.submit_task(
                 task_type="document_analysis",
-                params={"document_id": str(document.id)}
+                params={
+                    "document_id": str(document.id),
+                    "user_id": str(current_user.id),
+                }
             )
-            asyncio.create_task(document_service.analyze_document_task(str(document.id), str(current_user.id), task_id))
         except Exception as e:
             logger.error(f"启动文档分析失败: {str(e)}")
             # 即使启动分析失败也不影响文档上传
@@ -239,13 +237,13 @@ async def analyze_single_document(
     document.status = 'processing'
     db.commit()
     
-    task_id = task_manager.create_task(
+    task_id = task_manager.submit_task(
         task_type="document_analysis",
-        params={"document_id": str(document_id)}
+        params={
+            "document_id": str(document_id),
+            "user_id": str(current_user.id),
+        }
     )
-    
-    # 启动异步任务
-    asyncio.create_task(document_service.analyze_document_task(str(document_id), str(current_user.id), task_id))
     
     return {"task_id": task_id, "message": "分析任务已启动"}
 
@@ -345,11 +343,13 @@ async def analyze_documents_batch(
             db.commit()
             
             # 创建异步分析任务
-            task_id = task_manager.create_task(
+            task_id = task_manager.submit_task(
                 task_type="document_analysis",
-                params={"document_id": str(document.id)}
+                params={
+                    "document_id": str(document.id),
+                    "user_id": str(current_user.id),
+                }
             )
-            asyncio.create_task(document_service.analyze_document_task(str(document.id), str(current_user.id), task_id))
             
             results.append({
                 "document_id": str(document.id),

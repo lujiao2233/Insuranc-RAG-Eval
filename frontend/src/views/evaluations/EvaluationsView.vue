@@ -1,9 +1,9 @@
 <template>
-  <div class="evaluations-view">
-    <el-card>
+  <div class="page evaluations-page">
+    <el-card shadow="never" class="section" :body-style="{ padding: '16px' }">
       <template #header>
         <div class="card-header">
-          <span>评估管理</span>
+          <span class="page-title">评估管理</span>
           <el-button type="primary" @click="showUploadDialog = true">
             <el-icon><Plus /></el-icon>
             上传测试集
@@ -11,7 +11,7 @@
         </div>
       </template>
 
-      <div class="filter-bar">
+      <div class="filter-bar section-sm">
         <el-input
           v-model="keyword"
           placeholder="搜索测试集名称"
@@ -26,8 +26,14 @@
         </el-select>
       </div>
 
-      <el-table v-loading="loading" :data="filteredTestsets" style="width: 100%">
-        <el-table-column prop="name" label="测试集名称" min-width="220" />
+      <el-table v-loading="loading" :data="filteredTestsets" style="width: 100%" size="small">
+        <el-table-column prop="name" label="测试集名称" min-width="220">
+          <template #default="{ row }">
+            <el-link type="primary" @click="viewTestset(row)">
+              {{ row.name }}
+            </el-link>
+          </template>
+        </el-table-column>
         <el-table-column prop="question_count" label="问题数" width="90" />
         <el-table-column label="模型答案" width="140">
           <template #default="{ row }">
@@ -39,27 +45,25 @@
             {{ formatDateTime(row.create_time) }}
           </template>
         </el-table-column>
-        <el-table-column label="操作" width="170" fixed="right">
+        <el-table-column label="操作" width="220" fixed="right">
           <template #default="{ row }">
             <div class="button-row">
-              <el-button type="primary" size="small" class="fixed-width-btn" @click="viewTestset(row)">
+              <el-button link type="primary" size="small" @click="viewTestset(row)">
                 查看
               </el-button>
               <el-button
-                type="success"
+                link
+                type="primary"
                 size="small"
-                class="fixed-width-btn"
                 :disabled="!row.can_evaluate"
                 @click="goEvaluationCreatePage(row)"
               >
                 评估
               </el-button>
-            </div>
-            <div class="button-row">
-              <el-button type="warning" size="small" class="fixed-width-btn" @click="handleExport(row)">
+              <el-button link type="primary" size="small" @click="handleExport(row)">
                 导出
               </el-button>
-              <el-button type="danger" size="small" class="fixed-width-btn" @click="handleDelete(row)">
+              <el-button link type="danger" size="small" @click="handleDelete(row)">
                 删除
               </el-button>
             </div>
@@ -249,7 +253,13 @@ onMounted(() => {
 </script>
 
 <style lang="scss" scoped>
-.evaluations-view {
+.evaluations-page {
+  .page-title {
+    font-size: var(--font-16, 16px);
+    font-weight: var(--fw-600, 600);
+    color: var(--text-1, #303133);
+  }
+
   .card-header {
     display: flex;
     justify-content: space-between;
@@ -259,22 +269,29 @@ onMounted(() => {
   .filter-bar {
     display: flex;
     gap: 10px;
-    margin-bottom: 16px;
     align-items: center;
   }
 
   .button-row {
     display: flex;
     gap: 8px;
-    margin-bottom: 6px;
+    align-items: center;
   }
+}
 
-  .button-row:last-child {
-    margin-bottom: 0;
-  }
+:deep(.el-card__header) {
+  padding: 16px;
+  border-bottom: 1px solid var(--border-1, #ebeef5);
+}
 
-  .fixed-width-btn {
-    width: 64px;
+:deep(.el-table) {
+  --el-table-header-bg-color: var(--bg-app, #f8fafc);
+  --el-table-header-text-color: var(--text-2, #606266);
+  border-radius: var(--radius-8, 8px);
+  overflow: hidden;
+  
+  th.el-table__cell {
+    font-weight: 500;
   }
 }
 </style>

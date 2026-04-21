@@ -1,7 +1,7 @@
 <template>
-  <div class="usage-dashboard" v-loading="loading">
-    <div class="header-actions">
-      <div class="title">API 用量与性能大盘</div>
+  <div class="page usage-page" v-loading="loading">
+    <div class="header-actions section-sm">
+      <div class="page-title">API 用量与性能大盘</div>
       <div class="filters">
         <el-select v-model="rangePreset" style="width: 140px; margin-right: 10px" @change="onRangePresetChange">
           <el-option label="最近 1 小时" value="1h" />
@@ -25,30 +25,30 @@
     </div>
 
     <!-- 第一层：高价值总览 -->
-    <el-row :gutter="16" class="mb-4">
+    <el-row :gutter="16" class="section-sm">
       <el-col :span="6">
-        <el-card shadow="hover" class="data-card">
+        <el-card shadow="never" class="data-card">
           <div class="stat-title">总调用次数</div>
           <div class="stat-value">{{ dashboard?.overview.total_calls || 0 }}</div>
           <div class="stat-desc">近24h: {{ dashboard?.overview.calls_last_24h || 0 }} 次</div>
         </el-card>
       </el-col>
       <el-col :span="6">
-        <el-card shadow="hover" class="data-card">
+        <el-card shadow="never" class="data-card">
           <div class="stat-title">总 Token 消耗</div>
           <div class="stat-value">{{ (dashboard?.overview.total_tokens || 0).toLocaleString() }}</div>
           <div class="stat-desc">输入/输出: {{ dashboard?.io_ratio.avg_prompt_tokens || 0 }} / {{ dashboard?.io_ratio.avg_completion_tokens || 0 }} (均值)</div>
         </el-card>
       </el-col>
       <el-col :span="6">
-        <el-card shadow="hover" class="data-card">
+        <el-card shadow="never" class="data-card">
           <div class="stat-title">平均耗时 (ms)</div>
           <div class="stat-value">{{ dashboard?.overview.avg_latency || 0 }}</div>
           <div class="stat-desc">P90耗时: {{ dashboard?.percentiles.p90 || 0 }} ms</div>
         </el-card>
       </el-col>
       <el-col :span="6">
-        <el-card shadow="hover" class="data-card">
+        <el-card shadow="never" class="data-card">
           <div class="stat-title">预估费用 (¥)</div>
           <div class="stat-value">{{ dashboard?.overview.estimated_cost || 0 }}</div>
           <div class="stat-desc">按 Qwen 官方标准费率估算</div>
@@ -56,63 +56,70 @@
       </el-col>
     </el-row>
 
-    <!-- 第二层：性能、异常与分布 -->
-    <el-row :gutter="16" class="mb-4">
-      <el-col :span="8">
-        <el-card shadow="hover" header="耗时分位数分布">
-          <div class="stat-row">
-            <span>P50 耗时 (中位数):</span> <strong>{{ dashboard?.percentiles.p50 || 0 }} ms</strong>
-          </div>
-          <div class="stat-row">
-            <span>P90 耗时:</span> <strong>{{ dashboard?.percentiles.p90 || 0 }} ms</strong>
-          </div>
-          <div class="stat-row">
-            <span>P95 耗时:</span> <strong style="color: #E6A23C">{{ dashboard?.percentiles.p95 || 0 }} ms</strong>
-          </div>
+    <!-- 第二层：性能、异常与趋势 -->
+    <el-row :gutter="16" class="section-sm">
+      <!-- 左侧：请求明细与 Token 趋势 -->
+      <el-col :span="16">
+        <el-card shadow="never" header="请求明细与 Token 趋势" class="h-full">
+          <div ref="chartRef" style="height: 340px"></div>
         </el-card>
       </el-col>
       
+      <!-- 右侧：分位数与监控垂直堆叠 -->
       <el-col :span="8">
-        <el-card shadow="hover" header="异常与失败监控">
-          <div class="stat-row">
-            <span>失败率:</span> 
-            <strong :style="{color: (dashboard?.errors.failure_rate || 0) > 0.05 ? '#F56C6C' : '#67C23A'}">
-              {{ ((dashboard?.errors.failure_rate || 0) * 100).toFixed(2) }}%
-            </strong>
-          </div>
-          <div class="stat-row mb-2">
-            <span>总失败请求:</span> 
-            <strong :style="{color: (dashboard?.errors.total_failures || 0) > 0 ? '#F56C6C' : '#67C23A'}">
-              {{ dashboard?.errors.total_failures || 0 }}
-            </strong>
-          </div>
-          <div v-if="dashboard?.errors.top_failed_modules?.length" class="fail-list mt-2">
-            <div class="fail-title" style="font-size: 12px; color: #909399; margin-bottom: 4px;">Top 失败模块:</div>
-            <div v-for="err in dashboard.errors.top_failed_modules" :key="err.module" class="fail-item">
-              <span style="font-size: 13px">{{ getModuleLabel(err.module) }}</span>
-              <el-tag type="danger" size="small">{{ err.failures }} 次</el-tag>
+        <el-card shadow="never" header="耗时分位数分布" style="margin-bottom: 16px">
+          <div class="stat-grid">
+            <div class="stat-item">
+              <div class="stat-label">P50 (中位数)</div>
+              <div class="stat-num">{{ dashboard?.percentiles.p50 || 0 }}<small>ms</small></div>
+            </div>
+            <div class="stat-item">
+              <div class="stat-label">P90</div>
+              <div class="stat-num">{{ dashboard?.percentiles.p90 || 0 }}<small>ms</small></div>
+            </div>
+            <div class="stat-item">
+              <div class="stat-label">P95</div>
+              <div class="stat-num highlight">{{ dashboard?.percentiles.p95 || 0 }}<small>ms</small></div>
             </div>
           </div>
-          <div v-else class="text-center mt-4" style="color: #909399; font-size: 13px">暂无失败记录</div>
         </el-card>
-      </el-col>
 
-      <el-col :span="8">
-        <el-card shadow="hover" header="模块 Token 占比">
-          <div ref="pieChartRef" style="height: 180px"></div>
+        <el-card shadow="never" header="异常与失败监控">
+          <div class="stat-grid">
+            <div class="stat-item">
+              <div class="stat-label">失败率</div>
+              <div class="stat-num" :class="{ 'text-danger': (dashboard?.errors.failure_rate || 0) > 0.05, 'text-success': (dashboard?.errors.failure_rate || 0) <= 0.05 }">
+                {{ ((dashboard?.errors.failure_rate || 0) * 100).toFixed(1) }}%
+              </div>
+            </div>
+            <div class="stat-item">
+              <div class="stat-label">总失败数</div>
+              <div class="stat-num" :class="{ 'text-danger': (dashboard?.errors.total_failures || 0) > 0 }">
+                {{ dashboard?.errors.total_failures || 0 }}
+              </div>
+            </div>
+          </div>
+          <div v-if="dashboard?.errors.top_failed_modules?.length" class="fail-list mt-2">
+            <div class="fail-title">Top 失败模块:</div>
+            <div v-for="err in dashboard.errors.top_failed_modules" :key="err.module" class="fail-item">
+              <span>{{ getModuleLabel(err.module) }}</span>
+              <el-tag type="danger" size="small" effect="plain">{{ err.failures }} 次</el-tag>
+            </div>
+          </div>
+          <div v-else class="text-center mt-4 empty-hint">暂无失败记录</div>
         </el-card>
       </el-col>
     </el-row>
 
-    <!-- 第三层：趋势与对比 -->
-    <el-row :gutter="16" class="mb-4">
+    <!-- 第三层：分布与对比 -->
+    <el-row :gutter="16" class="section-sm">
       <el-col :span="18">
-        <el-card shadow="hover" header="请求明细与 Token 趋势">
-          <div ref="chartRef" style="height: 300px"></div>
+        <el-card shadow="never" header="模块 Token 占比">
+          <div ref="pieChartRef" style="height: 300px"></div>
         </el-card>
       </el-col>
       <el-col :span="6">
-        <el-card shadow="hover" header="环比分析 (vs上一周期)">
+        <el-card shadow="never" header="环比分析 (vs上一周期)" class="h-full">
           <div class="compare-item">
             <div class="c-label">调用次数</div>
             <div class="c-val">
@@ -150,8 +157,8 @@
     </el-row>
 
     <!-- 第三层：模型对比表格 -->
-    <el-card shadow="hover" header="模型深度分析与对比">
-      <el-table :data="dashboard?.models || []" border stripe>
+    <el-card shadow="never" class="section" header="模型深度分析与对比">
+      <el-table :data="dashboard?.models || []" size="small" style="width: 100%">
         <el-table-column prop="model" label="模型名称" min-width="150" />
         <el-table-column prop="calls" label="总调用次数" width="120" />
         <el-table-column prop="tokens" label="总 Token 消耗" width="150" />
@@ -173,6 +180,7 @@
 import { onMounted, onUnmounted, ref, nextTick } from 'vue'
 import * as echarts from 'echarts'
 import type { ECharts, EChartsOption } from 'echarts'
+import { registerTheme } from '@/utils/echarts/theme'
 import { format } from 'date-fns'
 import { usageApi, type UsageEvent, type UsageDashboard } from '@/api/usage'
 
@@ -220,7 +228,7 @@ const getRange = () => {
 
 const buildPieOption = (data: any[]): EChartsOption => {
   return {
-    tooltip: { trigger: 'item', formatter: '{b}: {c} Tokens ({d}%)' },
+    tooltip: { trigger: 'item', formatter: '{b}: {c} Tokens ({d}%)', confine: true },
     legend: { orient: 'vertical', left: 'right', top: 'center', textStyle: { fontSize: 12 } },
     series: [
       {
@@ -240,28 +248,70 @@ const buildPieOption = (data: any[]): EChartsOption => {
 }
 
 const buildOption = (): EChartsOption => {
-  const data = events.value.map((e) => ({
-    value: [new Date(e.timestamp).getTime(), e.total_tokens],
-    module: e.module,
-    model: e.model,
-    latency_ms: e.latency_ms,
-    prompt_tokens: e.prompt_tokens,
-    completion_tokens: e.completion_tokens
-  }))
+  // 1. 基础排序，确保连线方向正确
+  const sortedEvents = [...events.value].sort((a, b) => 
+    new Date(a.timestamp).getTime() - new Date(b.timestamp).getTime()
+  )
+
+  // 2. 聚合逻辑：将时间极其接近（比如 1s 内）的请求合并展示趋势，避免“锯齿”和“乱码”
+  // 如果点数不多（< 50），保留原始明细点；如果点数多，进行桶聚合
+  const useBucket = sortedEvents.length > 50
+  const bucketSize = 1000 * 5 // 5s 一个桶
+
+  let chartData: any[] = []
+  if (useBucket) {
+    const buckets = new Map<number, { tokens: number; count: number; models: Set<string> }>()
+    sortedEvents.forEach(e => {
+      const t = Math.floor(new Date(e.timestamp).getTime() / bucketSize) * bucketSize
+      if (!buckets.has(t)) buckets.set(t, { tokens: 0, count: 0, models: new Set() })
+      const b = buckets.get(t)!
+      b.tokens += e.total_tokens
+      b.count += 1
+      b.models.add(e.model)
+    })
+    chartData = Array.from(buckets.entries()).map(([t, b]) => ({
+      value: [t, b.tokens],
+      count: b.count,
+      isBucket: true,
+      models: Array.from(b.models).join(', ')
+    }))
+  } else {
+    chartData = sortedEvents.map((e) => ({
+      value: [new Date(e.timestamp).getTime(), e.total_tokens],
+      module: e.module,
+      model: e.model,
+      latency_ms: e.latency_ms,
+      prompt_tokens: e.prompt_tokens,
+      completion_tokens: e.completion_tokens,
+      isBucket: false
+    }))
+  }
 
   return {
     grid: { left: 50, right: 20, top: 20, bottom: 40 },
     tooltip: {
-      trigger: 'item',
+      trigger: 'axis',
+      confine: true,
       formatter: (params: any) => {
-        const ts = params?.data?.value?.[0]
-        const tokenVal = params?.data?.value?.[1]
+        const p = params[0]
+        const ts = p?.data?.value?.[0]
         const timeStr = ts ? format(new Date(ts), 'yyyy-MM-dd HH:mm:ss') : '-'
-        const moduleName = params?.data?.module ?? '-'
-        const modelName = params?.data?.model ?? '-'
-        const latency = params?.data?.latency_ms ?? 0
-        const promptTokens = params?.data?.prompt_tokens ?? 0
-        const completionTokens = params?.data?.completion_tokens ?? 0
+        
+        if (p?.data?.isBucket) {
+          return [
+            `<div style="font-weight:600;margin-bottom:6px;">${timeStr} (聚合窗口)</div>`,
+            `<div>请求次数：${p.data.count}</div>`,
+            `<div>总 Token：${p.data.value[1]}</div>`,
+            `<div>涉及模型：${p.data.models}</div>`
+          ].join('')
+        }
+
+        const tokenVal = p?.data?.value?.[1]
+        const moduleName = p?.data?.module ?? '-'
+        const modelName = p?.data?.model ?? '-'
+        const latency = p?.data?.latency_ms ?? 0
+        const promptTokens = p?.data?.prompt_tokens ?? 0
+        const completionTokens = p?.data?.completion_tokens ?? 0
         return [
           `<div style="font-weight:600;margin-bottom:6px;">${timeStr}</div>`,
           `<div>模块：${getModuleLabel(moduleName)}</div>`,
@@ -274,16 +324,14 @@ const buildOption = (): EChartsOption => {
     },
     xAxis: {
       type: 'time',
-      axisLabel: { color: '#909399' },
-      axisLine: { lineStyle: { color: '#dcdfe6' } },
-      splitLine: { show: false }
+      axisLabel: {
+        hideOverlap: true
+      }
     },
     yAxis: {
       type: 'value',
-      name: 'Tokens',
-      nameTextStyle: { color: '#909399', padding: [0, 20, 0, 0] },
-      axisLabel: { color: '#909399' },
-      splitLine: { lineStyle: { type: 'dashed', color: '#ebeef5' } }
+      name: useBucket ? 'Tokens (Sum/5s)' : 'Tokens',
+      nameTextStyle: { padding: [0, 20, 0, 0] }
     },
     dataZoom: [
       { type: 'inside', start: 0, end: 100 },
@@ -294,17 +342,15 @@ const buildOption = (): EChartsOption => {
         name: 'Token 消耗',
         type: 'line',
         smooth: true,
-        symbol: 'circle',
+        showSymbol: !useBucket, // 聚合时隐藏点，只看趋势
         symbolSize: 6,
-        itemStyle: { color: '#5470c6', borderColor: '#fff', borderWidth: 2 },
-        lineStyle: { width: 3, shadowColor: 'rgba(84,112,198,0.3)', shadowBlur: 10 },
         areaStyle: {
           color: new echarts.graphic.LinearGradient(0, 0, 0, 1, [
-            { offset: 0, color: 'rgba(84,112,198,0.3)' },
-            { offset: 1, color: 'rgba(84,112,198,0.05)' }
+            { offset: 0, color: 'rgba(37, 99, 235, 0.3)' },
+            { offset: 1, color: 'rgba(37, 99, 235, 0.05)' }
           ])
         },
-        data
+        data: chartData
       }
     ]
   }
@@ -326,14 +372,16 @@ const fetchData = async () => {
     
     if (chartRef.value) {
       if (!chartInstance) {
-        chartInstance = echarts.init(chartRef.value)
+        registerTheme()
+        chartInstance = echarts.init(chartRef.value, 'saas')
       }
       chartInstance.setOption(buildOption(), true)
     }
 
     if (pieChartRef.value && dashboard.value?.module_ratio) {
       if (!pieChartInstance) {
-        pieChartInstance = echarts.init(pieChartRef.value)
+        registerTheme()
+        pieChartInstance = echarts.init(pieChartRef.value, 'saas')
       }
       pieChartInstance.setOption(buildPieOption(dashboard.value.module_ratio), true)
     }
@@ -372,100 +420,178 @@ onUnmounted(() => {
 })
 </script>
 
-<style scoped>
-.usage-dashboard {
-  padding: 20px;
+<style lang="scss" scoped>
+.usage-page {
+  .header-actions {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+
+    .page-title {
+      font-size: var(--font-20, 20px);
+      font-weight: var(--fw-600, 600);
+      color: var(--text-1, #303133);
+    }
+  }
+
+  .filters {
+    display: flex;
+    align-items: center;
+  }
+
+  .data-card {
+    min-height: 140px;
+    height: auto;
+    border-radius: var(--radius-8, 8px);
+    
+    .stat-title {
+      font-size: var(--font-14, 14px);
+      color: var(--text-2, #909399);
+      margin-bottom: 8px;
+    }
+    
+    .stat-value {
+      font-size: 28px;
+      font-weight: bold;
+      color: var(--text-1, #303133);
+      margin-bottom: 8px;
+    }
+    
+    .stat-desc {
+      font-size: var(--font-12, 12px);
+      color: var(--text-2, #909399);
+    }
+  }
+
+  .stat-grid {
+    display: flex;
+    justify-content: space-between;
+    gap: 12px;
+    
+    .stat-item {
+      flex: 1;
+      
+      .stat-label {
+        font-size: var(--font-12, 12px);
+        color: var(--text-2, #909399);
+        margin-bottom: 4px;
+      }
+      
+      .stat-num {
+        font-size: 18px;
+        font-weight: 600;
+        color: var(--text-1, #303133);
+        
+        small {
+          font-size: 12px;
+          font-weight: 400;
+          margin-left: 2px;
+          color: var(--text-3, #c0c4cc);
+        }
+        
+        &.highlight {
+          color: var(--warning-1, #f59e0b);
+        }
+        
+        &.text-danger {
+          color: var(--danger-1, #ef4444);
+        }
+        
+        &.text-success {
+          color: var(--success-1, #16a34a);
+        }
+      }
+    }
+  }
+
+  .stat-row {
+    display: flex;
+    justify-content: space-between;
+    margin-bottom: 12px;
+    font-size: var(--font-14, 14px);
+    color: var(--text-1, #303133);
+  }
+
+  .mt-2 { margin-top: 8px; }
+  .mt-4 { margin-top: 16px; }
+
+  .fail-list {
+    background: rgba(239, 68, 68, 0.05);
+    border-radius: var(--radius-8, 8px);
+    padding: 8px;
+    
+    .fail-title {
+      font-size: var(--font-12, 12px);
+      color: var(--text-2, #909399);
+      margin-bottom: 4px;
+    }
+  }
+  
+  .fail-item {
+    display: flex;
+    justify-content: space-between;
+    margin-top: 4px;
+    color: var(--text-1, #303133);
+  }
+  
+  .empty-hint {
+    color: var(--text-2, #909399);
+    font-size: var(--font-12, 12px);
+  }
+
+  .compare-item {
+    margin-bottom: 16px;
+    
+    .c-label {
+      font-size: var(--font-12, 12px);
+      color: var(--text-2, #909399);
+      margin-bottom: 4px;
+    }
+    
+    .c-val {
+      display: flex;
+      align-items: baseline;
+      
+      .curr {
+        font-size: var(--font-16, 16px);
+        font-weight: var(--fw-600, 600);
+        color: var(--text-1, #303133);
+      }
+      
+      .vs {
+        margin: 0 8px;
+        font-size: var(--font-12, 12px);
+        color: var(--border-1, #e5eaf0);
+      }
+      
+      .prev {
+        font-size: var(--font-14, 14px);
+        color: var(--text-2, #909399);
+      }
+    }
+  }
 }
 
-.header-actions {
-  display: flex;
-  justify-content: space-between;
-  align-items: center;
-  margin-bottom: 20px;
+:deep(.el-card__header) {
+  padding: 16px;
+  border-bottom: 1px solid var(--border-1, #ebeef5);
+  font-weight: var(--fw-600, 600);
+  font-size: var(--font-14, 14px);
+  color: var(--text-1, #303133);
 }
 
-.header-actions .title {
-  font-size: 20px;
-  font-weight: bold;
-  color: #303133;
+:deep(.el-card) {
+  border-radius: var(--radius-8, 8px);
 }
 
-.filters {
-  display: flex;
-  align-items: center;
-}
-
-.mb-4 {
-  margin-bottom: 16px;
-}
-
-.data-card {
-  height: 120px;
-}
-
-.stat-title {
-  font-size: 14px;
-  color: #909399;
-  margin-bottom: 8px;
-}
-
-.stat-value {
-  font-size: 28px;
-  font-weight: bold;
-  color: #303133;
-  margin-bottom: 8px;
-}
-
-.stat-desc {
-  font-size: 12px;
-  color: #909399;
-}
-
-.stat-row {
-  display: flex;
-  justify-content: space-between;
-  margin-bottom: 12px;
-  font-size: 14px;
-}
-
-.mt-2 { margin-top: 8px; }
-.mt-4 { margin-top: 16px; }
-
-.fail-list {
-  background: #fdf6f6;
-  border-radius: 4px;
-  padding: 8px;
-}
-.fail-item {
-  display: flex;
-  justify-content: space-between;
-  margin-top: 4px;
-}
-
-.compare-item {
-  margin-bottom: 16px;
-}
-.compare-item .c-label {
-  font-size: 13px;
-  color: #909399;
-  margin-bottom: 4px;
-}
-.compare-item .c-val {
-  display: flex;
-  align-items: baseline;
-}
-.compare-item .curr {
-  font-size: 18px;
-  font-weight: bold;
-  color: #303133;
-}
-.compare-item .vs {
-  margin: 0 8px;
-  font-size: 12px;
-  color: #C0C4CC;
-}
-.compare-item .prev {
-  font-size: 14px;
-  color: #909399;
+:deep(.el-table) {
+  --el-table-header-bg-color: var(--bg-app, #f8fafc);
+  --el-table-header-text-color: var(--text-2, #606266);
+  border-radius: var(--radius-8, 8px);
+  overflow: hidden;
+  
+  th.el-table__cell {
+    font-weight: 500;
+  }
 }
 </style>

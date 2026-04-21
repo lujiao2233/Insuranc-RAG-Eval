@@ -94,13 +94,23 @@
                       />
                       <div class="task-footer">
                         <span class="task-status" :class="task.status">{{ getStatusText(task.status) }}</span>
-                        <el-button 
-                          v-if="task.status === 'running' || task.status === 'pending'" 
-                          link 
-                          type="danger" 
-                          size="small"
-                          @click="handleCancelTask(task)"
-                        >取消</el-button>
+                        <div class="task-actions">
+                          <el-button 
+                            v-if="task.status === 'running' || task.status === 'pending' || task.status === 'cancelling'" 
+                            link 
+                            type="danger" 
+                            size="small"
+                            :disabled="task.status === 'cancelling'"
+                            @click="handleCancelTask(task)"
+                          >{{ task.status === 'cancelling' ? '取消中' : '取消' }}</el-button>
+                          <el-button
+                            v-if="task.status === 'failed' || task.status === 'cancelled'"
+                            link
+                            type="primary"
+                            size="small"
+                            @click="handleRetryTask(task)"
+                          >重试</el-button>
+                        </div>
                       </div>
                     </div>
                   </template>
@@ -169,6 +179,7 @@ import { ref, computed, watch, onMounted, onUnmounted } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { useAuthStore } from '@/stores/auth'
 import { useTaskStore, type AppTask } from '@/stores/task'
+import { taskApi } from '@/api/tasks'
 import { ElMessage } from 'element-plus'
 import { 
   HomeFilled, 
@@ -251,16 +262,43 @@ const getStatusText = (status: string) => {
   const map: Record<string, string> = {
     pending: '进行中',
     running: '进行中',
+    cancelling: '取消中',
+    cancelled: '已取消',
     completed: '已完成',
     failed: '失败'
   }
   return map[status] || status
 }
 
-const handleCancelTask = (task: AppTask) => {
-  // 暂时只是移除展示，实际取消可能需要调接口
-  taskStore.removeTask(task.id)
-  ElMessage.success('已取消该任务')
+const handleCancelTask = async (task: AppTask) => {
+  try {
+    const result = await taskApi.cancelTask(task.id)
+    taskStore.updateTask(task.id, {
+      status: result.status === 'cancelled' ? 'cancelled' : 'cancelling',
+      message: result.message,
+      error: result.error || undefined
+    })
+    ElMessage.success(result.status === 'cancelled' ? '任务已取消' : '已发送取消请求')
+  } catch (error: any) {
+    ElMessage.error(error?.response?.data?.detail || '取消任务失败')
+  }
+}
+
+const handleRetryTask = async (task: AppTask) => {
+  try {
+    const result = await taskApi.retryTask(task.id)
+    taskStore.updateTask(task.id, {
+      status: 'pending',
+      progress: Math.round((result.progress || 0) * 100),
+      message: result.message,
+      error: undefined,
+      currentStep: result.current_step ?? undefined,
+      totalSteps: result.total_steps ?? undefined
+    })
+    ElMessage.success('任务已重新入队')
+  } catch (error: any) {
+    ElMessage.error(error?.response?.data?.detail || '重试任务失败')
+  }
 }
 
 // 监听路由变化
@@ -368,23 +406,25 @@ onUnmounted(() => {
   height: 100vh;
   
   .sidebar {
-    background-color: #304156;
+    background-color: var(--bg-card, #ffffff);
     transition: width 0.3s;
     overflow: hidden;
+    border-right: 1px solid var(--border-1, #e5eaf0);
     
     .logo {
       height: 60px;
       display: flex;
       align-items: center;
       justify-content: center;
-      color: #fff;
+      color: var(--brand-1, #2563eb);
       font-size: 18px;
-      font-weight: bold;
-      border-bottom: 1px solid rgba(255, 255, 255, 0.1);
+      font-weight: 600;
+      border-bottom: 1px solid var(--border-1, #e5eaf0);
       
       .logo-text {
         margin-left: 12px;
         white-space: nowrap;
+        color: var(--text-1, #303133);
       }
     }
     
@@ -393,20 +433,25 @@ onUnmounted(() => {
       background-color: transparent;
       
       .el-menu-item {
+        color: var(--text-2, #606266);
+        
         &:hover {
-          background-color: rgba(255, 255, 255, 0.1);
+          background-color: var(--bg-app, #f5f7fa);
+          color: var(--brand-1, #2563eb);
         }
         
         &.is-active {
-          background-color: rgba(64, 158, 255, 0.2);
+          background-color: rgba(37, 99, 235, 0.1);
+          color: var(--brand-1, #2563eb);
+          font-weight: 600;
         }
       }
     }
   }
   
   .header {
-    background-color: #fff;
-    box-shadow: 0 1px 4px rgba(0, 21, 41, 0.08);
+    background-color: var(--bg-card, #ffffff);
+    border-bottom: 1px solid var(--border-1, #e5eaf0);
     display: flex;
     align-items: center;
     justify-content: space-between;
@@ -425,20 +470,20 @@ onUnmounted(() => {
         align-items: center;
         gap: 8px;
         padding: 4px 12px;
-        border-radius: 16px;
-        background: #f0f2f5;
+        border-radius: var(--radius-8, 8px);
+        background: var(--bg-app, #f5f7fa);
         cursor: pointer;
         transition: all 0.3s;
         border: 1px solid transparent;
 
         &:hover {
           background: #e6e8eb;
-          border-color: #dcdfe6;
+          border-color: var(--border-1, #dcdfe6);
         }
 
         &.has-active {
-          background: #ecf5ff;
-          color: #409eff;
+          background: rgba(37, 99, 235, 0.1);
+          color: var(--brand-1, #2563eb);
           
           .status-icon {
             animation: rotating 2s linear infinite;
@@ -446,15 +491,15 @@ onUnmounted(() => {
         }
 
         &.success {
-          background: #f0f9eb;
-          color: #67c23a;
-          border-color: #e1f3d8;
+          background: rgba(22, 163, 74, 0.1);
+          color: var(--success-1, #16a34a);
+          border-color: rgba(22, 163, 74, 0.2);
         }
 
         &.error {
-          background: #fef0f0;
-          color: #f56c6c;
-          border-color: #fde2e2;
+          background: rgba(239, 68, 68, 0.1);
+          color: var(--danger-1, #ef4444);
+          border-color: rgba(239, 68, 68, 0.2);
         }
 
         .status-icon {
@@ -464,6 +509,7 @@ onUnmounted(() => {
         .status-text {
           font-size: 13px;
           font-weight: 500;
+          color: var(--text-2, #606266);
         }
       }
     }
@@ -471,9 +517,8 @@ onUnmounted(() => {
     .tags-view-container {
       height: 34px;
       width: 100%;
-      background: #fff;
-      border-bottom: 1px solid #d8dce5;
-      box-shadow: 0 1px 3px 0 rgba(0, 0, 0, 0.12), 0 0 3px 0 rgba(0, 0, 0, 0.04);
+      background: var(--bg-card, #ffffff);
+      border-bottom: 1px solid var(--border-1, #e5eaf0);
       
       .tags-view-wrapper {
         :deep(.el-tabs__header) {
@@ -488,26 +533,26 @@ onUnmounted(() => {
             height: 34px;
             line-height: 34px;
             border: none;
-            border-right: 1px solid #d8dce5;
-            color: #495060;
-            background: #fff;
+            border-right: 1px solid var(--border-1, #e5eaf0);
+            color: var(--text-2, #606266);
+            background: var(--bg-card, #ffffff);
             padding: 0 15px;
-            font-size: 12px;
+            font-size: var(--font-12, 12px);
             transition: all 0.3s cubic-bezier(0.645, 0.045, 0.355, 1);
 
             &:first-child {
               margin-left: 15px;
-              border-left: 1px solid #d8dce5;
+              border-left: 1px solid var(--border-1, #e5eaf0);
             }
 
             &.is-active {
-              background-color: #42b983;
-              color: #fff;
-              border-color: #42b983;
+              background-color: var(--bg-app, #f5f7fa);
+              color: var(--brand-1, #2563eb);
+              font-weight: 600;
 
               &::before {
                 content: '';
-                background: #fff;
+                background: var(--brand-1, #2563eb);
                 display: inline-block;
                 width: 8px;
                 height: 8px;
@@ -518,7 +563,7 @@ onUnmounted(() => {
             }
 
             &:hover {
-              color: #42b983;
+              color: var(--brand-1, #2563eb);
             }
 
             .is-icon-close {
@@ -537,8 +582,8 @@ onUnmounted(() => {
               }
 
               &:hover {
-                background-color: #b4bccc;
-                color: #fff;
+                background-color: var(--border-1, #e5eaf0);
+                color: var(--text-1, #303133);
               }
             }
           }
@@ -552,7 +597,7 @@ onUnmounted(() => {
         align-items: center;
         gap: 8px;
         cursor: pointer;
-        color: #606266;
+        color: var(--text-2, #606266);
         
         .username {
           @media (max-width: 768px) {
@@ -564,8 +609,8 @@ onUnmounted(() => {
   }
   
   .main-content {
-    background-color: #f5f7fa;
-    padding: 20px;
+    background-color: var(--bg-app, #f5f7fa);
+    padding: 0; /* padding 统一交由 .page 类控制 */
     overflow-y: auto;
   }
 }
@@ -582,19 +627,23 @@ onUnmounted(() => {
 
 .task-center-popover {
   padding: 0 !important;
+  border-radius: var(--radius-8, 8px) !important;
+  box-shadow: var(--shadow-1) !important;
+  border-color: var(--border-1) !important;
 }
 
 .task-center {
   .task-header {
     padding: 12px 16px;
-    border-bottom: 1px solid #f0f0f0;
+    border-bottom: 1px solid var(--border-1, #e5eaf0);
     display: flex;
     justify-content: space-between;
     align-items: center;
 
     .title {
-      font-weight: bold;
+      font-weight: 600;
       font-size: 14px;
+      color: var(--text-1, #303133);
     }
   }
 
@@ -608,7 +657,7 @@ onUnmounted(() => {
       transition: background 0.3s;
 
       &:hover {
-        background: #f9f9f9;
+        background: var(--bg-app, #f5f7fa);
       }
 
       .task-info {
@@ -618,13 +667,13 @@ onUnmounted(() => {
 
         .task-name {
           font-size: 13px;
-          color: #303133;
+          color: var(--text-1, #303133);
           font-weight: 500;
         }
 
         .task-time {
           font-size: 12px;
-          color: #909399;
+          color: var(--text-2, #909399);
         }
       }
 
@@ -637,9 +686,17 @@ onUnmounted(() => {
         .task-status {
           font-size: 12px;
           
-          &.running { color: #409eff; }
-          &.completed { color: #67c23a; }
-          &.failed { color: #f56c6c; }
+          &.running { color: var(--brand-1, #2563eb); }
+          &.cancelling { color: #e6a23c; }
+          &.cancelled { color: var(--text-2, #909399); }
+          &.completed { color: var(--success-1, #16a34a); }
+          &.failed { color: var(--danger-1, #ef4444); }
+        }
+
+        .task-actions {
+          display: flex;
+          gap: 8px;
+          align-items: center;
         }
       }
     }

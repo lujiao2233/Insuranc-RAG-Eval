@@ -4,7 +4,7 @@
 import os
 import json
 import re
-from typing import List, Dict, Any, Optional, Callable
+from typing import List, Dict, Any, Optional, Callable, Tuple
 from datetime import datetime
 from pathlib import Path
 import uuid
@@ -337,6 +337,20 @@ def _normalize_knowledge_types(raw_knowledge_type: str) -> List[str]:
 def _map_knowledge_type_to_question_types(knowledge_type: str) -> List[Dict[str, Any]]:
     # 统一走单一路径，避免多套映射规则漂移
     return _mapped_types_from_knowledge_type(knowledge_type, "")
+
+
+def _format_knowledge_type(value: Any) -> str:
+    if isinstance(value, list):
+        raw_items = [str(item).strip() for item in value if str(item).strip()]
+        normalized = _normalize_knowledge_types("、".join(raw_items))
+        return "、".join(normalized or raw_items)
+    if value is None:
+        return ""
+    raw_text = str(value).strip()
+    if not raw_text:
+        return ""
+    normalized = _normalize_knowledge_types(raw_text)
+    return "、".join(normalized) if normalized else raw_text
 
 
 def _extract_analysis_from_metadata(chunks_data: List[Dict[str, Any]]) -> Dict[str, Any]:
@@ -1508,6 +1522,7 @@ class AdvancedTestsetGenerator:
         doc_genre_pref: Dict[int, str] = {}
         doc_product_tags: Dict[int, List[str]] = {}
         doc_product_names_display: Dict[int, List[str]] = {}
+        persona_doc_pref: Dict[int, List[str]] = {}
         
         if is_chunk_input and chunks_in:
             logger.info("切片输入模式：从metadata中提取分析结果，跳过LLM智能分析")
@@ -2730,15 +2745,9 @@ class AdvancedTestsetGenerator:
     ) -> str:
         """创建测试集生成任务"""
         from services.task_manager import task_manager
-        task_id = task_manager.create_task("testset_generation", {"params": params})
-        
-        # 在后台启动任务
-        task_manager.start_task(
-            task_id,
-            self.generate_testset_async,
-            content,
-            params,
-            task_id
+        task_id = task_manager.submit_task(
+            "testset_generation",
+            {"content": content, "params": params}
         )
         
         return task_id

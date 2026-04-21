@@ -14,11 +14,78 @@ from config.database import get_db
 from schemas import EvaluationCreate
 from models.database import User, Evaluation as EvaluationModel, EvaluationResult as EvaluationResultModel
 from models.database import TestSet, Question
-from services.task_manager import task_manager
+from config.settings import settings
+from services.task_manager import task_manager, TaskCancelledError
 from services.ragas_evaluator import evaluator
+from services.config_service import ConfigService
 
 router = APIRouter()
 EXECUTION_EVAL_METHOD = "testset_execution"
+
+
+def _default_metrics_for_method(evaluation_method: Optional[str]) -> List[str]:
+    method = (evaluation_method or "").strip().lower()
+    if "deepeval" in method:
+        return [
+            "answer_relevance",
+            "context_relevance",
+            "context_precision",
+            "faithfulness",
+            "answer_correctness",
+            "toxicity",
+            "bias",
+        ]
+    return [
+        "answer_relevance",
+        "context_relevance",
+        "context_precision",
+        "faithfulness",
+        "answer_correctness",
+    ]
+
+
+def _configured_metrics_for_method(config_service: ConfigService, user_id: str, evaluation_method: Optional[str]) -> List[str]:
+    method = (evaluation_method or "").strip().lower()
+    if "deepeval" in method:
+        config_key = "evaluation.deepeval_metrics"
+        supported_metrics = {
+            "answer_relevance",
+            "context_relevance",
+            "context_precision",
+            "faithfulness",
+            "answer_correctness",
+            "toxicity",
+            "bias",
+            "hallucination",
+        }
+    else:
+        config_key = "evaluation.ragas_metrics"
+        supported_metrics = {
+            "answer_relevance",
+            "context_relevance",
+            "context_precision",
+            "faithfulness",
+            "answer_correctness",
+            "answer_similarity",
+        }
+
+    configured = config_service.get_config_value(
+        user_id,
+        config_key,
+        _default_metrics_for_method(evaluation_method)
+    )
+    if not isinstance(configured, list):
+        configured = _default_metrics_for_method(evaluation_method)
+
+    normalized: List[str] = []
+    seen = set()
+    for metric in configured:
+        key = str(metric or "").strip()
+        if not key or key not in supported_metrics or key in seen:
+            continue
+        seen.add(key)
+        normalized.append(key)
+    return normalized
 
 
 def _short_display_name(name: str, max_len: int = 24) -> str:
@@ -139,6 +206,7 @@ def run_evaluation_task(
     db = SessionLocal()
     
     try:
+        task_manager.ensure_not_cancelled(task_id)
         task_manager.update_status(task_id, "running")
         task_manager.append_log(task_id, f"开始评估任务: {evaluation_id}")
         
@@ -168,13 +236,21 @@ def run_evaluation_task(
         
         task_manager.append_log(task_id, f"加载了 {len(questions)} 个问题")
         def sync_estimated_progress(progress_ratio: float, message: str):
+            task_manager.ensure_not_cancelled(task_id)
             ratio = max(0.0, min(float(progress_ratio or 0.0), 1.0))
-            task_manager.update_progress(task_id, ratio, message)
+            estimated_done = min(
+                len(questions),
+                max(0, int(round(ratio * len(questions))))
+            )
+            task_manager.update_progress(
+                task_id,
+                ratio,
+                message,
+                current_step=estimated_done,
+                total_steps=len(questions),
+            )
             try:
-                evaluation.evaluated_questions = min(
-                    len(questions),
-                    max(0, int(round(ratio * len(questions))))
-                )
+                evaluation.evaluated_questions = estimated_done
                 db.commit()
             except Exception:
                 db.rollback()
@@ -214,11 +290,18 @@ def run_evaluation_task(
         
         def on_progress(done: int, total: int):
             """评估进行中回调：同步任务进度与DB计数，供前端实时展示。"""
+            task_manager.ensure_not_cancelled(task_id)
             safe_total = max(1, int(total or 0))
             safe_done = max(0, min(int(done or 0), safe_total))
             progress_ratio = safe_done / safe_total
 
-            task_manager.update_progress(task_id, progress_ratio, f"评估进度: {safe_done}/{safe_total}")
+            task_manager.update_progress(
+                task_id,
+                progress_ratio,
+                f"评估进度: {safe_done}/{safe_total}",
+                current_step=safe_done,
+                total_steps=safe_total,
+            )
             try:
                 evaluation.evaluated_questions = safe_done
                 db.commit()
@@ -226,7 +309,7 @@ def run_evaluation_task(
                 db.rollback()
 
         run_config = {
-            "timeout": 300,
+            "timeout": 600,
             "max_workers": 4,
             "user_id": str(evaluation.user_id) if getattr(evaluation, "user_id", None) else None,
             "db_session": db,
@@ -239,6 +322,7 @@ def run_evaluation_task(
             engine=evaluation_method if "deepeval" in evaluation_method.lower() else None,
             run_config=run_config
         )
+        task_manager.ensure_not_cancelled(task_id)
         
         if result.get("error"):
             evaluation.status = "failed"
@@ -279,10 +363,20 @@ def run_evaluation_task(
         task_manager.finish_task(
             task_id,
             result={"evaluation_id": evaluation_id, "overall_metrics": result.get("overall_metrics", {})},
-            message="评估完成"
+            message="评估完成",
+            current_step=len(result.get("individual_results", [])),
+            total_steps=len(questions),
         )
         task_manager.append_log(task_id, f"评估任务完成，耗时 {result.get('evaluation_time', 0):.2f} 秒")
         
+    except TaskCancelledError:
+        task_manager.append_log(task_id, "评估任务已取消")
+        task_manager.mark_cancelled(task_id, "评估任务已取消")
+        evaluation = db.query(EvaluationModel).filter(EvaluationModel.id == evaluation_id).first()
+        if evaluation:
+            evaluation.status = "failed"
+            evaluation.error_message = "任务已取消"
+            db.commit()
     except Exception as e:
         task_manager.append_log(task_id, f"评估失败: {str(e)}")
         task_manager.fail_task(task_id, str(e))
@@ -383,6 +477,36 @@ async def create_evaluation(
     db: Session = Depends(get_db)
 ):
     """创建并启动评估任务"""
+    config_service = ConfigService(db)
+    allowed_metrics = _configured_metrics_for_method(
+        config_service,
+        str(current_user.id),
+        evaluation_data.evaluation_method
+    )
+    if not allowed_metrics:
+        raise HTTPException(status_code=400, detail="当前评估方法未配置可用指标，请先在系统配置中勾选并保存")
+
+    requested_metrics = evaluation_data.evaluation_metrics or allowed_metrics
+    selected_metrics: List[str] = []
+    invalid_metrics: List[str] = []
+    seen = set()
+    for metric in requested_metrics:
+        key = str(metric or "").strip()
+        if not key or key in seen:
+            continue
+        seen.add(key)
+        if key in allowed_metrics:
+            selected_metrics.append(key)
+        else:
+            invalid_metrics.append(key)
+    if invalid_metrics:
+        raise HTTPException(
+            status_code=400,
+            detail=f"以下评估指标未在系统配置中启用: {', '.join(invalid_metrics)}"
+        )
+    if not selected_metrics:
+        raise HTTPException(status_code=400, detail="请至少选择一个已启用的评估指标")
+
     testset = db.query(TestSet).filter(TestSet.id == str(evaluation_data.testset_id)).first()
     if not testset:
         raise HTTPException(status_code=404, detail="测试集不存在")
@@ -408,10 +532,16 @@ async def create_evaluation(
         ).count()
     
     if unanswered_questions > 0:
-        raise HTTPException(
-            status_code=400,
-            detail=f"测试集中有 {unanswered_questions} 个问题缺少可评估答案，无法评估。请先执行测试集生成模型答案。"
-        )
+        if testset.generation_method == "csv_import":
+            raise HTTPException(
+                status_code=400,
+                detail=f"测试集中有 {unanswered_questions} 个问题缺少模型答案，无法评估。如果是CSV导入的测试集，请确保所有问题的'模型答案'列都有内容。"
+            )
+        else:
+            raise HTTPException(
+                status_code=400,
+                detail=f"测试集中有 {unanswered_questions} 个问题缺少可评估答案，无法评估。请先执行测试集生成模型答案。"
+            )
 
     # 评估前生成“报告阶段测试集”，用于报告中心独立展示
     report_testset = _clone_to_report_testset(
@@ -429,7 +559,7 @@ async def create_evaluation(
         evaluation_method=evaluation_data.evaluation_method or "ragas_official",
         total_questions=question_count,
         evaluated_questions=0,
-        evaluation_metrics=evaluation_data.evaluation_metrics or ["answer_relevance", "faithfulness"],
+        evaluation_metrics=selected_metrics,
         eval_config={
             **(evaluation_data.eval_config or {}),
             **({"source_execution_id": source_execution_id} if source_execution_id else {}),
@@ -442,25 +572,15 @@ async def create_evaluation(
     db.commit()
     db.refresh(evaluation)
     
-    task_id = task_manager.create_task(
+    task_id = task_manager.submit_task(
         task_type="evaluation",
         params={
             "evaluation_id": evaluation.id,
             "testset_id": str(report_testset.id),
-            "evaluation_method": evaluation.evaluation_method
+            "evaluation_method": evaluation.evaluation_method,
+            "evaluation_metrics": evaluation.evaluation_metrics or _default_metrics_for_method(evaluation.evaluation_method),
+            "db_url": settings.DATABASE_URL,
         }
-    )
-    
-    from config.settings import settings
-    task_manager.start_task(
-        task_id,
-        run_evaluation_task,
-        task_id,
-        evaluation.id,
-        str(report_testset.id),
-        evaluation.evaluation_method,
-        evaluation.evaluation_metrics or ["answer_relevance", "faithfulness"],
-        settings.DATABASE_URL
     )
     
     return {

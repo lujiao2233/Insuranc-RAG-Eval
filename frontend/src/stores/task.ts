@@ -6,16 +6,21 @@ export interface AppTask {
   name: string
   type: 'testset' | 'evaluation' | 'document'
   progress: number
-  status: 'pending' | 'running' | 'completed' | 'failed'
+  status: 'pending' | 'running' | 'cancelling' | 'cancelled' | 'completed' | 'failed'
   time: string
   targetId?: string
   error?: string
+  message?: string
+  currentStep?: number
+  totalSteps?: number
 }
 
 export const useTaskStore = defineStore('task', () => {
   const tasks = ref<AppTask[]>([])
 
-  const activeTaskCount = computed(() => tasks.value.filter(t => t.status === 'running' || t.status === 'pending').length)
+  const activeTaskCount = computed(() => tasks.value.filter(
+    t => t.status === 'running' || t.status === 'pending' || t.status === 'cancelling'
+  ).length)
   
   const hasActiveTasks = computed(() => activeTaskCount.value > 0)
 
@@ -47,7 +52,9 @@ export const useTaskStore = defineStore('task', () => {
   }
 
   function clearCompleted() {
-    tasks.value = tasks.value.filter(t => t.status === 'running' || t.status === 'pending')
+    tasks.value = tasks.value.filter(
+      t => t.status === 'running' || t.status === 'pending' || t.status === 'cancelling'
+    )
   }
 
   function getTask(id: string) {

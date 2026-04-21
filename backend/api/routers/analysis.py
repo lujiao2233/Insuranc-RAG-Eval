@@ -34,14 +34,13 @@ async def analyze_document(
     if document.is_analyzed:
         return {"message": "文档已分析", "document_id": str(document_id), "status": "already_analyzed"}
     
-    task_id = task_manager.create_task(
+    task_id = task_manager.submit_task(
         task_type="document_analysis",
-        params={"document_id": str(document_id)}
+        params={
+            "document_id": str(document_id),
+            "user_id": str(current_user.id),
+        }
     )
-    
-    # 启动异步任务
-    import asyncio
-    asyncio.create_task(document_service.analyze_document_task(str(document_id), str(current_user.id), task_id))
     
     return {
         "task_id": task_id,

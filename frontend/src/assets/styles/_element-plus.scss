@@ -1,0 +1,81 @@
+/* src/assets/styles/_element-plus.scss */
+:root {
+  /* 主色体系 */
+  --el-color-primary: var(--brand-1);
+  --el-color-primary-dark-2: var(--brand-2);
+
+  --el-color-success: var(--success-1);
+  --el-color-warning: var(--warning-1);
+  --el-color-danger: var(--danger-1);
+
+  /* 圆角/边框/背景 */
+  --el-border-radius-base: var(--radius-8);
+  --el-border-color: var(--border-1);
+  --el-bg-color: var(--bg-card);
+  --el-fill-color-blank: var(--bg-card);
+
+  /* 字体 */
+  --el-font-size-base: var(--font-14);
+  --el-text-color-primary: var(--text-1);
+  --el-text-color-regular: var(--text-2);
+  --el-text-color-placeholder: var(--text-3);
+
+  /* 统一投影更“高级”一点 */
+  --el-box-shadow-light: var(--shadow-1);
+
+  /* Table 可读性（减少刺眼、增强层级） */
+  --el-table-header-bg-color: #f8fafc;
+  --el-table-header-text-color: var(--text-2);
+  --el-table-row-hover-bg-color: #f3f6ff;
+  --el-table-border-color: var(--border-1);
+}
+
+/* 卡片类组件统一圆角与边框（避免“白块”） */
+.el-card {
+  border-radius: var(--radius-8);
+  border-color: var(--border-1);
+  box-shadow: var(--shadow-1);
+}
+
+.el-card.is-never-shadow {
+  box-shadow: none;
+}
+
+.el-card__header {
+  padding: 16px;
+  border-bottom: 1px solid var(--border-1);
+  font-weight: var(--fw-600);
+  font-size: var(--font-16);
+  color: var(--text-1);
+}
+
+.el-table {
+  --el-table-header-bg-color: var(--bg-app);
+  --el-table-header-text-color: var(--text-2);
+  border-radius: var(--radius-8);
+  overflow: hidden;
+}
+
+.el-table th.el-table__cell {
+  font-weight: 500;
+}
+
+/* 统一按钮视觉：减少花哨颜色噪音，强调主次 */
+.el-button--primary {
+  font-weight: 600;
+}
+.el-button.is-text,
+.el-button.is-link {
+  font-weight: 500;
+}
+
+/* 表单项间距更舒服一点（不会太松） */
+.el-form-item {
+  margin-bottom: 16px;
+}
+
+/* 让输入控件更“干净” */
+.el-input__wrapper,
+.el-select__wrapper {
+  border-radius: var(--radius-8);
+}

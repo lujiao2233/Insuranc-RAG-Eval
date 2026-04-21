@@ -89,9 +89,10 @@ class QwenService(LLMServiceInterface):
     
     async def generate_text(self, prompt: str, **kwargs) -> str:
         """生成文本，包含重试机制和更长的超时时间"""
-        max_retries = kwargs.get("max_retries", 3)
-        # 进一步放宽超时到 300 秒，处理复杂文档提纲
-        timeout_value = kwargs.get("timeout", 300)
+        # 默认仅尝试 1 次，失败立即抛错给上层，由前端提示
+        max_retries = kwargs.get("max_retries", 1)
+        # 进一步放宽超时到 600 秒，处理复杂文档元数据提取
+        timeout_value = kwargs.get("timeout", 600)
         retry_delay = 5  # 增加重试延迟
         module_name = kwargs.get("module_name", "unknown") # 获取调用模块名称
         
@@ -196,7 +197,7 @@ class QwenService(LLMServiceInterface):
                         break
         
         # 如果重试耗尽仍然失败，记录失败日志
-        error_msg = f"LLM生成文本最终失败，重试 {max_retries} 次后错误: {str(last_error)}"
+        error_msg = f"LLM生成文本失败（共尝试 {max_retries} 次）: {str(last_error)}"
         asyncio.create_task(asyncio.to_thread(log_token_usage, module_name, self.model, {}, 0, is_error=True, error_msg=error_msg))
         raise Exception(error_msg)
     
@@ -359,7 +360,12 @@ class MockLLMService(LLMServiceInterface):
         }
 
 
-def get_llm_service(use_mock: bool = False, user_id: str = None, db: Session = None) -> LLMServiceInterface:
+def get_llm_service(
+    use_mock: bool = False,
+    user_id: str = None,
+    db: Session = None,
+    model_config_key: str = "qwen.generation_model",
+) -> LLMServiceInterface:
     """获取LLM服务实例，支持按用户从数据库读取配置"""
     if use_mock:
         return MockLLMService()
@@ -374,7 +380,7 @@ def get_llm_service(use_mock: bool = False, user_id: str = None, db: Session = N
         cs = ConfigService(db)
         api_key = cs.get_api_key(user_id, "qwen")
         base_url = cs.get_config_value(user_id, "qwen.api_endpoint")
-        model = cs.get_config_value(user_id, "qwen.generation_model", model)
+        model = cs.get_config_value(user_id, model_config_key, model)
 
     # 如果数据库没有配置，回退到环境变量
     if not api_key:

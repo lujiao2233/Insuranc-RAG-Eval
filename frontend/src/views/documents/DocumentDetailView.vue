@@ -1,12 +1,12 @@
 <template>
-  <div class="document-detail" v-loading="loading">
-    <el-page-header @back="$router.back()">
+  <div class="page document-detail-page" v-loading="loading">
+    <el-page-header @back="$router.back()" class="section">
       <template #content>
-        <span class="text-large font-600 mr-3">{{ document?.filename }}</span>
+        <span class="page-title">{{ document?.filename }}</span>
       </template>
     </el-page-header>
 
-    <div v-if="analysisTask" class="analysis-progress mt-4">
+    <div v-if="analysisTask" class="analysis-progress section">
       <el-alert
         :title="`文档分析中: ${analysisTask.message || '正在处理...'}`"
         type="info"
@@ -21,11 +21,9 @@
       </el-alert>
     </div>
     
-    <el-divider />
-    
-    <el-row :gutter="20" v-if="document">
+    <el-row :gutter="24" v-if="document" class="section">
       <el-col :span="18">
-        <el-tabs v-model="activeTab" type="border-card">
+        <el-tabs v-model="activeTab" type="border-card" class="detail-tabs">
           <el-tab-pane label="基本信息" name="info">
             <el-descriptions :column="2" border>
               <el-descriptions-item label="文件名">{{ document.filename }}</el-descriptions-item>
@@ -50,8 +48,8 @@
               </el-descriptions-item>
             </el-descriptions>
 
-            <div class="mt-4" v-if="hasDocMetadataToDisplay">
-              <h4>元数据详情</h4>
+            <div class="section-sm" v-if="hasDocMetadataToDisplay">
+              <h4 class="sub-title">元数据详情</h4>
               <el-descriptions :column="2" border>
                 <el-descriptions-item
                   v-for="(value, key) in displayDocMetadata"
@@ -84,7 +82,7 @@
           </el-tab-pane>
 
           <el-tab-pane label="文档切片" name="chunks" v-if="document.is_analyzed">
-            <div class="chunk-filters mb-4">
+            <div class="chunk-filters section-sm">
               <el-input
                 v-model="chunkQuery.keyword"
                 placeholder="搜索片段关键词..."
@@ -96,13 +94,12 @@
                   <el-button @click="fetchChunks"><el-icon><Search /></el-icon></el-button>
                 </template>
               </el-input>
-              
             </div>
 
             <el-table 
               :data="chunks" 
-              stripe 
               style="width: 100%" 
+              size="small"
               v-loading="chunksLoading"
               @row-click="showChunkDetail"
               class="clickable-table"
@@ -139,7 +136,7 @@
               </el-table-column>
             </el-table>
             
-            <div class="pagination-container mt-4">
+            <div class="pagination-container section-sm">
               <el-pagination
                 v-model:current-page="currentPage"
                 v-model:page-size="pageSize"
@@ -153,9 +150,9 @@
       </el-col>
       
       <el-col :span="6">
-        <el-card>
+        <el-card shadow="never" class="section">
           <template #header>
-            <span>操作</span>
+            <span class="card-title">操作</span>
           </template>
           
           <div class="action-buttons">
@@ -182,11 +179,11 @@
           </div>
         </el-card>
         
-        <el-card class="related-testsets-card">
+        <el-card shadow="never" class="related-testsets-card section">
           <template #header>
-            <span>关联测试集</span>
+            <span class="card-title">关联测试集</span>
           </template>
-          <el-empty v-if="!testsets.length" description="暂无关联测试集" />
+          <el-empty v-if="!testsets.length" description="暂无关联测试集" :image-size="60" />
           <div v-else class="testset-list">
             <div
               v-for="testset in testsets"
@@ -399,6 +396,9 @@ const startPolling = (taskId: string) => {
         const res = await documentApi.getDocument(route.params.id as string)
         document.value = res
         if (activeTab.value === 'chunks') fetchChunks()
+      } else if (task.status === 'cancelled') {
+        clearInterval(timer)
+        ElMessage.warning(task.message || '分析已取消')
       } else if (task.status === 'failed') {
         clearInterval(timer)
         ElMessage.error(`分析失败: ${task.error || '未知错误'}`)
@@ -562,7 +562,29 @@ onMounted(async () => {
 </script>
 
 <style lang="scss" scoped>
-.document-detail {
+.document-detail-page {
+  .page-title {
+    font-size: var(--font-20, 20px);
+    font-weight: var(--fw-600, 600);
+    color: var(--text-1, #303133);
+  }
+
+  .card-title {
+    font-size: var(--font-16, 16px);
+    font-weight: var(--fw-600, 600);
+    color: var(--text-1, #303133);
+  }
+
+  .sub-title {
+    margin-top: 0;
+    margin-bottom: 12px;
+    color: var(--text-1, #303133);
+    border-left: 4px solid var(--brand-1, #2563eb);
+    padding-left: 8px;
+    font-size: var(--font-14, 14px);
+    font-weight: var(--fw-600, 600);
+  }
+
   .action-buttons {
     display: flex;
     flex-direction: column;
@@ -573,9 +595,6 @@ onMounted(async () => {
       width: 100%;
       justify-content: flex-start;
       text-align: left;
-    }
-
-    .el-button + .el-button {
       margin-left: 0;
     }
 
@@ -586,10 +605,6 @@ onMounted(async () => {
       display: inline-flex;
       justify-content: center;
     }
-  }
-
-  .related-testsets-card {
-    margin-top: 20px;
   }
 
   .testset-list {
@@ -603,12 +618,15 @@ onMounted(async () => {
     justify-content: space-between;
     align-items: center;
     padding: 12px;
-    border-radius: 4px;
+    border-radius: var(--radius-8, 8px);
     cursor: pointer;
     transition: background-color 0.2s;
+    color: var(--text-1, #303133);
+    font-size: var(--font-14, 14px);
     
     &:hover {
-      background-color: #f5f7fa;
+      background-color: var(--bg-app, #f5f7fa);
+      color: var(--brand-1, #2563eb);
     }
   }
   
@@ -618,7 +636,7 @@ onMounted(async () => {
     
     pre {
       margin: 0;
-      font-size: 12px;
+      font-size: var(--font-12, 12px);
     }
   }
 
@@ -628,24 +646,24 @@ onMounted(async () => {
       transition: background-color 0.2s;
       
       &:hover {
-        background-color: #f5f7fa !important;
+        background-color: var(--bg-app, #f5f7fa) !important;
       }
     }
   }
 
   .chunk-content-preview {
-    font-size: 14px;
+    font-size: var(--font-14, 14px);
     line-height: 1.6;
-    color: #606266;
+    color: var(--text-2, #606266);
     max-height: 100px;
     overflow: hidden;
   }
 
   .full-content-box {
-    background-color: #f8f9fa;
+    background-color: var(--bg-app, #f8f9fa);
     padding: 16px;
-    border-radius: 4px;
-    border: 1px solid #e4e7ed;
+    border-radius: var(--radius-8, 8px);
+    border: 1px solid var(--border-1, #e4e7ed);
     max-height: 400px;
     overflow-y: auto;
     
@@ -654,8 +672,9 @@ onMounted(async () => {
       white-space: pre-wrap;
       word-wrap: break-word;
       font-family: inherit;
-      font-size: 14px;
+      font-size: var(--font-14, 14px);
       line-height: 1.8;
+      color: var(--text-1, #303133);
     }
   }
 
@@ -663,10 +682,36 @@ onMounted(async () => {
     h4 {
       margin-top: 0;
       margin-bottom: 12px;
-      color: #303133;
-      border-left: 4px solid #409eff;
+      color: var(--text-1, #303133);
+      border-left: 4px solid var(--brand-1, #409eff);
       padding-left: 8px;
     }
+  }
+  
+  .pagination-container {
+    display: flex;
+    justify-content: flex-end;
+    margin-top: var(--space-16, 16px);
+  }
+}
+
+:deep(.el-card__header) {
+  padding: 16px;
+  border-bottom: 1px solid var(--border-1, #ebeef5);
+}
+
+:deep(.el-card) {
+  border-radius: var(--radius-8, 8px);
+}
+
+:deep(.el-table) {
+  --el-table-header-bg-color: var(--bg-app, #f8fafc);
+  --el-table-header-text-color: var(--text-2, #606266);
+  border-radius: var(--radius-8, 8px);
+  overflow: hidden;
+  
+  th.el-table__cell {
+    font-weight: 500;
   }
 }
 </style>

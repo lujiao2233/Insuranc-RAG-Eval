@@ -91,10 +91,32 @@ export default {
 <style scoped>
 .sidebar {
   height: 100%;
+  background-color: var(--bg-card, #ffffff);
+  border-right: 1px solid var(--border-1, #e5eaf0);
 }
 
 .sidebar-menu:not(.el-menu--collapse) {
   width: 200px;
   min-height: 400px;
+}
+
+:deep(.el-menu) {
+  border-right: none;
+  background-color: transparent;
+  
+  .el-menu-item, .el-sub-menu__title {
+    color: var(--text-2, #606266);
+    
+    &:hover {
+      background-color: var(--bg-app, #f5f7fa);
+      color: var(--brand-1, #2563eb);
+    }
+  }
+  
+  .el-menu-item.is-active {
+    background-color: rgba(37, 99, 235, 0.1);
+    color: var(--brand-1, #2563eb);
+    font-weight: 600;
+  }
 }
 </style>

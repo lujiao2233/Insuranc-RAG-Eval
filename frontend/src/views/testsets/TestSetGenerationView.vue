@@ -558,12 +558,34 @@ const stopPolling = () => {
   }
 }
 
+const cleanupCreatedTestset = async (message?: string) => {
+  if (!createdTestsetId.value) return
+  const testsetId = createdTestsetId.value
+  try {
+    await testsetApi.deleteTestSet(testsetId)
+    if (message) {
+      progressInfo.logs.push(message)
+    }
+  } catch (error) {
+    console.error('删除失败任务对应测试集失败:', error)
+  } finally {
+    createdTestsetId.value = null
+  }
+}
+
 const pollTaskStatus = (taskId: string) => {
   let lastLogIndex = 0
   const poll = async () => {
     try {
       const task = await testsetApi.getTaskStatus(taskId)
       progressInfo.stage = task.message || task.status
+
+      if (typeof task.total_steps === 'number' && task.total_steps > 0) {
+        progressInfo.total = task.total_steps
+      }
+      if (typeof task.current_step === 'number') {
+        progressInfo.current = Math.max(progressInfo.current, task.current_step)
+      }
 
       if (typeof task.progress === 'number' && progressInfo.total > 0) {
         const currentByProgress = Math.round(task.progress * progressInfo.total)
@@ -575,7 +597,10 @@ const pollTaskStatus = (taskId: string) => {
       // 更新全局任务状态
       taskStore.updateTask(taskId, {
         progress: progressPercentage.value,
-        status: 'running'
+        status: 'running',
+        message: task.message,
+        currentStep: task.current_step ?? undefined,
+        totalSteps: task.total_steps ?? undefined,
       })
 
       if (task.logs && task.logs.length > lastLogIndex) {
@@ -607,20 +632,33 @@ const pollTaskStatus = (taskId: string) => {
         return
       }
 
+      if (task.status === 'cancelled') {
+        stopPolling()
+        generating.value = false
+        generationFailed.value = true
+        progressInfo.stage = '生成已取消'
+        taskStore.removeTask(taskId)
+        progressInfo.logs.push(task.message || '任务已取消')
+        await cleanupCreatedTestset('已删除已取消任务创建的测试集')
+        ElNotification({
+          title: '任务已取消',
+          message: task.message || '测试集生成已取消',
+          type: 'warning'
+        })
+        return
+      }
+
       if (task.status === 'failed') {
         stopPolling()
         generating.value = false
         generationFailed.value = true
         progressInfo.stage = '生成失败'
         
-        // 更新全局任务为失败
-        taskStore.updateTask(taskId, {
-          status: 'failed',
-          error: task.error || '未知错误'
-        })
+        taskStore.removeTask(taskId)
 
         const err = task.error || '未知错误'
         progressInfo.logs.push(`错误: ${err}`)
+        await cleanupCreatedTestset('已删除失败任务创建的测试集')
         ElNotification({
           title: '生成失败',
           message: `任务执行失败：${err}，可直接点击“使用上次参数重试”`,
@@ -633,14 +671,11 @@ const pollTaskStatus = (taskId: string) => {
       generationFailed.value = true
       progressInfo.stage = '生成失败'
       
-      // 更新全局任务为失败
-      taskStore.updateTask(taskId, {
-        status: 'failed',
-        error: error?.message || '网络异常'
-      })
+      taskStore.removeTask(taskId)
 
       const err = error?.response?.data?.detail || error?.message || '网络异常'
       progressInfo.logs.push(`轮询失败: ${err}`)
+      await cleanupCreatedTestset('已删除轮询失败任务创建的测试集')
       ElNotification({
         title: '网络异常',
         message: `状态轮询失败：${err}，请重试`,
@@ -668,40 +703,44 @@ const submitGeneration = async (payload: {
   progressInfo.total = payload.documentIds.length * payload.questionsPerDoc
   progressInfo.logs = []
 
-  let personaList: any[] = []
-  if (payload.personaJson) {
-    personaList = JSON.parse(payload.personaJson)
+  try {
+    let personaList: any[] = []
+    if (payload.personaJson) {
+      personaList = JSON.parse(payload.personaJson)
+    }
+
+    const testSet = await testsetApi.createTestSet({
+      document_id: payload.documentIds[0],
+      name: payload.name,
+      description: `自动生成的测试集，包含${payload.questionsPerDoc}个问题/文档`
+    })
+    createdTestsetId.value = testSet.id
+    progressInfo.stage = '开始生成'
+    progressInfo.logs.push('创建测试集成功，开始异步生成问题...')
+
+    const { task_id } = await testsetApi.generateQuestionsAsync(testSet.id, {
+      num_questions: payload.questionsPerDoc * payload.documentIds.length,
+      generation_mode: 'advanced',
+      enable_safety_robustness: payload.enableSafetyRobustness,
+      document_ids: payload.documentIds,
+      persona_list: personaList
+    })
+    
+    taskStore.addTask({
+      id: task_id,
+      name: `生成测试集: ${payload.name}`,
+      type: 'testset',
+      progress: 0,
+      status: 'running',
+      targetId: testSet.id
+    })
+
+    progressInfo.logs.push(`任务已创建: ${task_id}`)
+    pollTaskStatus(task_id)
+  } catch (error) {
+    await cleanupCreatedTestset('已删除提交失败时创建的测试集')
+    throw error
   }
-
-  const testSet = await testsetApi.createTestSet({
-    document_id: payload.documentIds[0],
-    name: payload.name,
-    description: `自动生成的测试集，包含${payload.questionsPerDoc}个问题/文档`
-  })
-  createdTestsetId.value = testSet.id
-  progressInfo.stage = '开始生成'
-  progressInfo.logs.push('创建测试集成功，开始异步生成问题...')
-
-  const { task_id } = await testsetApi.generateQuestionsAsync(testSet.id, {
-    num_questions: payload.questionsPerDoc * payload.documentIds.length,
-    generation_mode: 'advanced',
-    enable_safety_robustness: payload.enableSafetyRobustness,
-    document_ids: payload.documentIds,
-    persona_list: personaList
-  })
-  
-  // 添加到全局任务列表
-  taskStore.addTask({
-    id: task_id,
-    name: `生成测试集: ${payload.name}`,
-    type: 'testset',
-    progress: 0,
-    status: 'running',
-    targetId: testSet.id
-  })
-
-  progressInfo.logs.push(`任务已创建: ${task_id}`)
-  pollTaskStatus(task_id)
 }
 
 const handleGenerate = async () => {

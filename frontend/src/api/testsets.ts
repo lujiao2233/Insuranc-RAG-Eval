@@ -1,5 +1,5 @@
 import { request } from './index'
-import type { TestSet, Question, PaginatedResponse } from '@/types'
+import type { TestSet, Question, PaginatedResponse, TaskStatus } from '@/types'
 
 export const testsetApi = {
   getTestSets(params?: { skip?: number; limit?: number; document_id?: string; stage?: 'base' | 'evaluation' | 'report' }): Promise<PaginatedResponse<TestSet>> {
@@ -78,16 +78,7 @@ export const testsetApi = {
     return request.post(`/testsets/${testsetId}/generate_async`, params)
   },
 
-  getTaskStatus(taskId: string): Promise<{
-    id: string
-    type: string
-    status: 'pending' | 'running' | 'finished' | 'failed'
-    progress: number
-    message: string
-    logs: string[]
-    result: any
-    error: string
-  }> {
+  getTaskStatus(taskId: string): Promise<TaskStatus> {
     return request.get(`/testsets/tasks/${taskId}`)
   },
 
@@ -109,8 +100,8 @@ export const testsetApi = {
     return request.get('/testsets/advanced/config')
   },
 
-  exportTestSet(id: string): Promise<Blob> {
-    return request.get(`/testsets/${id}/export`, {}, { responseType: 'blob' })
+  exportTestSet(id: string, params?: { evaluation_id?: string }): Promise<Blob> {
+    return request.get(`/testsets/${id}/export`, params || {}, { responseType: 'blob' })
   },
 
   importTestSetCsv(params: {

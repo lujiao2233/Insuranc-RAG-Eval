@@ -1,9 +1,9 @@
 <template>
-  <div class="documents-view">
-    <el-card>
+  <div class="page documents-page">
+    <el-card shadow="never" class="section" :body-style="{ padding: '16px' }">
       <template #header>
         <div class="card-header">
-          <span>文档管理</span>
+          <span class="page-title">文档管理</span>
           <el-button type="primary" @click="showUploadDialog = true">
             <el-icon><Upload /></el-icon>
             上传文档
@@ -59,11 +59,11 @@
         </el-select>
       </div>
       
-      <div class="table-toolbar">
+      <div class="table-toolbar section-sm">
         <el-select 
           v-model="batchOperation" 
           placeholder="选择操作"
-          style="width: 120px; margin-right: 10px;"
+          style="width: 120px;"
           :disabled="multipleSelection.length === 0"
         >
           <el-option label="分析" value="analyze" />
@@ -73,7 +73,6 @@
         </el-select>
         <el-button 
           @click="handleBatchOperation"
-          type="primary"
           :disabled="multipleSelection.length === 0 || !batchOperation"
         >
           批量操作
@@ -87,6 +86,7 @@
         v-loading="documentStore.loading"
         :data="documentStore.documents"
         style="width: 100%"
+        size="small"
         @selection-change="handleSelectionChange"
       >
         <el-table-column type="selection" width="55" />
@@ -121,44 +121,42 @@
             {{ formatDateTime(row.upload_time) }}
           </template>
         </el-table-column>
-        <el-table-column label="操作" width="180" fixed="right">
+        <el-table-column label="操作" width="240" fixed="right">
           <template #default="{ row }">
             <div class="button-row">
               <el-button 
+                link
                 type="primary" 
                 size="small"
                 :disabled="isAnalyzing[row.id]"
                 @click="viewDocument(row.id)"
-                class="fixed-width-btn"
               >
                 查看
               </el-button>
               <el-button 
-                type="warning" 
+                link
+                type="primary" 
                 size="small"
-                :loading="isAnalyzing[row.id] || row.status === 'processing'" 
-                :disabled="row.is_analyzed || isAnalyzing[row.id] || row.status === 'processing'"
+                :loading="isDocumentProcessing(row)"
+                :disabled="row.is_analyzed || isDocumentProcessing(row)"
                 @click="analyzeDocument(row)"
-                class="fixed-width-btn"
               >
-                {{ (isAnalyzing[row.id] || row.status === 'processing') ? '分析中' : (row.is_analyzed ? '已分析' : '分析') }}
+                {{ isDocumentProcessing(row) ? '分析中' : (row.is_analyzed ? '已分析' : '分析') }}
               </el-button>
-            </div>
-            <div class="button-row">
               <el-button 
-                :type="row.status === 'active' ? 'info' : 'success'"
+                link
+                type="primary"
                 size="small"
                 @click="toggleDocumentStatus(row)"
-                class="fixed-width-btn"
               >
                 {{ row.status === 'active' ? '停用' : '启用' }}
               </el-button>
               <el-button 
+                link
                 type="danger" 
                 size="small"
                 :disabled="isAnalyzing[row.id]"
                 @click="handleDelete(row)"
-                class="fixed-width-btn"
               >
                 删除
               </el-button>
@@ -284,19 +282,33 @@ const updateDocumentTasksByTarget = (
 const pollDocumentTaskStatus = (taskId: string, documentId: string) => {
   const poll = async () => {
     const currentTask = taskStore.getTask(taskId)
-    if (!currentTask || (currentTask.status !== 'running' && currentTask.status !== 'pending')) {
+    if (!currentTask || !['running', 'pending', 'cancelling'].includes(currentTask.status)) {
       return
     }
 
     try {
       const task = await documentApi.getTaskStatus(taskId)
-      if (typeof task.progress === 'number') {
-        taskStore.updateTask(taskId, { progress: Math.round(task.progress * 100) })
-      }
+      taskStore.updateTask(taskId, {
+        progress: typeof task.progress === 'number' ? Math.round(task.progress * 100) : 0,
+        message: task.message,
+        currentStep: task.current_step ?? undefined,
+        totalSteps: task.total_steps ?? undefined,
+      })
 
       if (task.status === 'finished') {
         isAnalyzing.value[documentId] = false
         taskStore.updateTask(taskId, { progress: 100, status: 'completed' })
+        await documentStore.fetchDocuments({
+          status: statusFilter.value === 'unanalyzed' ? 'active' : (statusFilter.value || undefined),
+          is_analyzed: statusFilter.value === 'unanalyzed' ? false : (statusFilter.value === 'active' ? true : undefined),
+          category: categoryFilter.value || undefined
+        })
+        return
+      }
+
+      if (task.status === 'cancelled') {
+        isAnalyzing.value[documentId] = false
+        taskStore.updateTask(taskId, { status: 'cancelled', error: task.error || '任务已取消' })
         await documentStore.fetchDocuments({
           status: statusFilter.value === 'unanalyzed' ? 'active' : (statusFilter.value || undefined),
           is_analyzed: statusFilter.value === 'unanalyzed' ? false : (statusFilter.value === 'active' ? true : undefined),
@@ -400,13 +412,34 @@ const getStatusType = (status: string) => {
     unanalyzed: 'info',
     active: 'success',
     processing: 'warning',
-    inactive: 'danger'
+    inactive: 'danger',
+    failed: 'danger'
   }
   return types[status] || 'info'
 }
 
-const getUnifiedStatus = (doc: Document): 'unanalyzed' | 'processing' | 'active' | 'inactive' => {
-  if (doc.status === 'processing') return 'processing'
+const getLatestDocumentTask = (documentId: string) => {
+  return taskStore.tasks.find(task => task.type === 'document' && task.targetId === documentId)
+}
+
+const isDocumentProcessing = (doc: Document) => {
+  if (isAnalyzing.value[doc.id]) return true
+  const latestTask = getLatestDocumentTask(doc.id)
+  if (latestTask) {
+    if (latestTask.status === 'failed' || latestTask.status === 'cancelled' || latestTask.status === 'completed') {
+      return false
+    }
+    if (latestTask.status === 'running' || latestTask.status === 'pending' || latestTask.status === 'cancelling') {
+      return true
+    }
+  }
+  return doc.status === 'processing'
+}
+
+const getUnifiedStatus = (doc: Document): 'unanalyzed' | 'processing' | 'active' | 'inactive' | 'failed' => {
+  const latestTask = getLatestDocumentTask(doc.id)
+  if (latestTask && latestTask.status === 'failed') return 'failed'
+  if (isDocumentProcessing(doc)) return 'processing'
   if (doc.status === 'inactive') return 'inactive'
   if (!doc.is_analyzed) return 'unanalyzed'
   return 'active'
@@ -429,7 +462,8 @@ const getStatusText = (status: string) => {
     unanalyzed: '未分析',
     active: '活跃',
     processing: '分析中',
-    inactive: '停用'
+    inactive: '停用',
+    failed: '分析失败'
   }
   return texts[status] || status
 }
@@ -459,7 +493,7 @@ const handlePageChange = (page: number) => {
 }
 
 const fetchDocuments = () => {
-  documentStore.fetchDocuments({
+  return documentStore.fetchDocuments({
     status: statusFilter.value === 'unanalyzed' ? 'active' : (statusFilter.value || undefined),
     is_analyzed: statusFilter.value === 'unanalyzed' ? false : (statusFilter.value === 'active' ? true : undefined),
     category: categoryFilter.value || undefined
@@ -596,11 +630,25 @@ const handleBatchDisable = async () => {
 }
 
 const handleBatchDelete = async () => {
+  const selectedDocs = [...multipleSelection.value]
+  const selectedCount = selectedDocs.length
+  if (selectedCount === 0) {
+    ElMessage.warning('请先选择要删除的文档')
+    return
+  }
+
   try {
-    const deletePromises = multipleSelection.value.map(doc => documentStore.deleteDocument(doc.id))
+    const deletePromises = selectedDocs.map(doc => documentStore.deleteDocument(doc.id))
     await Promise.all(deletePromises)
-    
-    ElMessage.success(`成功删除 ${multipleSelection.value.length} 个文档`)
+
+    // 删除后重新拉取列表，避免出现“总数有值但当前页空数据”的分页越界
+    await fetchDocuments()
+    if (documentStore.documents.length === 0 && documentStore.pagination.total > 0 && currentPage.value > 1) {
+      currentPage.value -= 1
+      await documentStore.setPage(currentPage.value)
+    }
+
+    ElMessage.success(`成功删除 ${selectedCount} 个文档`)
   } catch (error: any) {
     console.error('删除失败:', error)
     ElMessage.error(`删除失败: ${error?.response?.data?.detail || '删除失败'}`)
@@ -757,7 +805,13 @@ onMounted(() => {
 </script>
 
 <style lang="scss" scoped>
-.documents-view {
+.documents-page {
+  .page-title {
+    font-size: var(--font-16, 16px);
+    font-weight: var(--fw-600, 600);
+    color: var(--text-1, #303133);
+  }
+
   .card-header {
     display: flex;
     justify-content: space-between;
@@ -767,39 +821,58 @@ onMounted(() => {
   .filter-bar {
     display: flex;
     gap: 12px;
-    margin-bottom: 16px;
+    margin-bottom: var(--space-16, 16px);
+    flex-wrap: wrap;
   }
   
   .table-toolbar {
     display: flex;
     align-items: center;
     gap: 12px;
-    margin-bottom: 16px;
     
     .selection-info {
-      color: #909399;
-      font-size: 14px;
+      color: var(--text-2, #909399);
+      font-size: var(--font-14, 14px);
     }
   }
   
   .button-row {
-    display: flex;
+    display: grid;
+    grid-template-columns: repeat(4, minmax(0, 1fr));
     gap: 4px;
-    margin-bottom: 4px;
-    
-    &:last-child {
-      margin-bottom: 0;
-    }
+    align-items: center;
+    width: 100%;
+    white-space: nowrap;
   }
-  
-  .fixed-width-btn {
-    min-width: 60px;
+
+  .button-row :deep(.el-button) {
+    width: 100%;
+    margin: 0;
+    min-width: 0;
+    padding: 0;
+    justify-content: center;
   }
   
   .pagination-container {
     display: flex;
-    justify-content: center;
-    margin-top: 16px;
+    justify-content: flex-end;
+    margin-top: var(--space-16, 16px);
+  }
+}
+
+:deep(.el-card__header) {
+  padding: 16px;
+  border-bottom: 1px solid var(--border-1, #ebeef5);
+}
+
+:deep(.el-table) {
+  --el-table-header-bg-color: var(--bg-app, #f8fafc);
+  --el-table-header-text-color: var(--text-2, #606266);
+  border-radius: var(--radius-8, 8px);
+  overflow: hidden;
+  
+  th.el-table__cell {
+    font-weight: 500;
   }
 }
 </style>

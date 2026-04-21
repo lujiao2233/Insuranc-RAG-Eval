@@ -8,6 +8,7 @@ from config.settings import settings
 from api.routers import documents, testsets, evaluations, auth, config, analysis, reports, usage
 from config.database import engine
 from models.database import Base
+from services.task_manager import task_manager
 from utils.logger import setup_logger
 
 log_dir = os.path.join(os.path.dirname(__file__), "logs")
@@ -21,11 +22,14 @@ async def lifespan(app: FastAPI):
     try:
         Base.metadata.create_all(bind=engine)
         logger.info("数据库初始化完成")
+        task_manager.start_workers()
+        logger.info("持久化任务队列已启动")
     except Exception as e:
         logger.error(f"数据库初始化失败: {str(e)}")
         raise
     yield
     logger.info("关闭数据库连接...")
+    task_manager.stop_workers()
 
 
 app = FastAPI(

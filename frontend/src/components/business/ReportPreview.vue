@@ -212,11 +212,11 @@ const getMetricLabel = (key: string) => {
   const labels: Record<string, string> = {
     faithfulness: '忠实度',
     answer_relevancy: '答案相关性',
-    context_precision: '上下文精确度',
+    context_precision: '检索精确性',
     context_recall: '上下文召回率',
     answer_correctness: '答案正确性',
     answer_similarity: '答案相似度',
-    context_relevancy: '上下文相关性',
+    context_relevancy: '检索相关性',
     hallucination: '幻觉率'
   }
   return labels[key] || key
@@ -226,11 +226,11 @@ const getMetricDescription = (key: string) => {
   const descriptions: Record<string, string> = {
     faithfulness: '衡量生成答案与检索上下文的一致性',
     answer_relevancy: '衡量答案与问题的相关程度',
-    context_precision: '衡量检索上下文的精确程度',
+    context_precision: '衡量检索结果的精确程度',
     context_recall: '衡量检索上下文的召回程度',
     answer_correctness: '衡量答案的正确程度',
     answer_similarity: '衡量生成答案与期望答案的相似度',
-    context_relevancy: '衡量检索上下文与问题的相关性',
+    context_relevancy: '衡量检索结果与问题的相关性',
     hallucination: '衡量生成答案中的幻觉内容比例'
   }
   return descriptions[key]

@@ -50,6 +50,18 @@
                 <el-option label="qwen3-turbo" value="qwen3-turbo" />
               </el-select>
             </el-form-item>
+
+            <el-form-item label="分析模型">
+              <el-select 
+                v-model="qwenConfig['qwen.analysis_model']" 
+                placeholder="选择分析模型"
+                style="width: 100%;"
+              >
+                <el-option label="qwen3-max" value="qwen3-max" />
+                <el-option label="qwen3-plus" value="qwen3-plus" />
+                <el-option label="qwen3-turbo" value="qwen3-turbo" />
+              </el-select>
+            </el-form-item>
             
             <el-form-item label="温度参数">
               <el-slider 
@@ -69,7 +81,7 @@
         </el-tab-pane>
         
         <el-tab-pane label="评估配置" name="evaluation">
-          <el-form :model="evaluationConfig" label-width="180px" style="max-width: 600px;">
+          <el-form :model="evaluationConfig" label-width="150px" style="max-width: 1000px;">
             <el-form-item label="评估批处理大小">
               <el-input-number 
                 v-model="evaluationConfig['evaluation.batch_size']" 
@@ -88,19 +100,55 @@
               />
             </el-form-item>
             
-            <el-form-item label="RAGAS评估指标">
-              <el-select 
-                v-model="evaluationConfig['evaluation.ragas_metrics']" 
-                multiple
-                placeholder="选择RAGAS评估指标"
-                style="width: 100%;"
-              >
-                <el-option label="答案相关性" value="answer_relevance" />
-                <el-option label="上下文相关性" value="context_relevance" />
-                <el-option label="忠实度" value="faithfulness" />
-                <el-option label="答案正确性" value="answer_correctness" />
-              </el-select>
-            </el-form-item>
+            <el-row :gutter="20">
+              <el-col :span="12">
+                <el-form-item label="RAGAS评估指标" class="vertical-form-item">
+                  <el-select 
+                    v-model="evaluationConfig['evaluation.ragas_metrics']" 
+                    multiple
+                    placeholder="选择RAGAS评估指标"
+                    style="width: 100%;"
+                  >
+                    <el-option-group label="检索类">
+                      <el-option label="检索相关性" value="context_relevance" disabled />
+                      <el-option label="检索精确性" value="context_precision" disabled />
+                    </el-option-group>
+                    <el-option-group label="生成类">
+                      <el-option label="答案相关性" value="answer_relevance" />
+                      <el-option label="答案正确性" value="answer_correctness" />
+                      <el-option label="答案相似度" value="answer_similarity" />
+                      <el-option label="忠实度" value="faithfulness" disabled />
+                    </el-option-group>
+                  </el-select>
+                </el-form-item>
+              </el-col>
+
+              <el-col :span="12">
+                <el-form-item label="DeepEval评估指标" class="vertical-form-item">
+                  <el-select
+                    v-model="evaluationConfig['evaluation.deepeval_metrics']"
+                    multiple
+                    placeholder="选择DeepEval评估指标"
+                    style="width: 100%;"
+                  >
+                    <el-option-group label="检索类">
+                      <el-option label="检索相关性" value="context_relevance" disabled />
+                      <el-option label="检索精确性" value="context_precision" disabled />
+                    </el-option-group>
+                    <el-option-group label="生成类">
+                      <el-option label="答案相关性" value="answer_relevance" />
+                      <el-option label="答案正确性" value="answer_correctness" />
+                      <el-option label="忠实度" value="faithfulness" disabled />
+                      <el-option label="幻觉检测" value="hallucination" disabled />
+                    </el-option-group>
+                    <el-option-group label="安全类">
+                      <el-option label="有害言论检测" value="toxicity" />
+                      <el-option label="偏见检测" value="bias" />
+                    </el-option-group>
+                  </el-select>
+                </el-form-item>
+              </el-col>
+            </el-row>
             
             <el-form-item>
               <el-button type="primary" @click="saveConfig('evaluation')" :loading="saving">保存配置</el-button>
@@ -281,6 +329,7 @@ const qwenConfig = reactive<Record<string, any>>({
   'qwen.api_endpoint': 'https://dashscope.aliyuncs.com/compatible-mode/v1',
   'qwen.generation_model': 'qwen3-max',
   'qwen.evaluation_model': 'qwen3-max',
+  'qwen.analysis_model': 'qwen3-max',
   'qwen.temperature': 0.1,
   'qwen.max_tokens': 2000
 })
@@ -288,7 +337,8 @@ const qwenConfig = reactive<Record<string, any>>({
 const evaluationConfig = reactive<Record<string, any>>({
   'evaluation.batch_size': 5,
   'evaluation.temperature': 0.1,
-  'evaluation.ragas_metrics': ['answer_relevance', 'context_relevance', 'faithfulness']
+  'evaluation.ragas_metrics': ['answer_relevance', 'context_relevance', 'context_precision', 'faithfulness', 'answer_correctness'],
+  'evaluation.deepeval_metrics': ['answer_relevance', 'context_relevance', 'context_precision', 'faithfulness', 'answer_correctness', 'toxicity', 'bias']
 })
 
 const thresholdConfig = reactive<Record<string, any>>({
@@ -412,6 +462,23 @@ onMounted(() => {
 </script>
 
 <style lang="scss" scoped>
+.vertical-form-item {
+  flex-direction: column;
+  align-items: flex-start;
+}
+
+.vertical-form-item :deep(.el-form-item__label) {
+  width: 100% !important;
+  text-align: left;
+  justify-content: flex-start;
+  margin-bottom: 8px;
+}
+
+.vertical-form-item :deep(.el-form-item__content) {
+  margin-left: 0 !important;
+  width: 100%;
+}
+
 .api-config-view {
   .card-header {
     display: flex;

@@ -1,7 +1,7 @@
 """文档切片服务模块
 基于文档提纲的智能切片功能，用于将长文档分割为适合RAG系统处理的文本块
 """
-from typing import List, Dict, Any, Optional
+from typing import List, Dict, Any, Optional, Tuple
 import hashlib
 import json
 import re
@@ -61,93 +61,46 @@ class GeneralChunkingStrategy(BaseChunkingStrategy):
     """通用语义切片策略"""
     
     async def chunk(self, text: str, chunk_size: int, section_meta: Dict[str, Any]) -> List[Dict[str, Any]]:
-        if not self.llm or len(text) > 8000:
-            return self._fallback_semantic_split(text, chunk_size)
-            
-        return await self._semantic_split_with_llm(text, chunk_size, section_meta)
+        if not text:
+            return []
+        chunks = self._semantic_split_with_llamaindex(text, chunk_size, section_meta)
+        if chunks:
+            return chunks
+        return self._fallback_semantic_split(text, chunk_size)
 
-    async def _semantic_split_with_llm(self, text, target_size, section_meta):
-        """调用LLM寻找最佳语义切分点"""
-        prompt = f"""
-你是一个文档处理专家。请分析下面这段来自章节"{section_meta.get('title', '未知')}"的文本。
-我需要将其切分成若干个长度约为 {target_size} 字符的片段。
-
-请在文本中寻找最合适的语义切分点（通常是段落末尾或句号后），并为每个切分点返回该位置的**最后 20 个字符**作为标识。
-
-要求：
-1. **严禁在句子中间切断**。切分点必须是句号(。)、问号(？)、感叹号(！)或换行符(\\n)。
-2. 每个片段应保持语义独立。
-3. 必须返回标准的 JSON 格式。
-4. 切分点标识必须与原文完全一致，不要修改任何字符。
-
-待切分文本：
-{text}
-
-返回格式：
-{{
-  "split_points": [
-    "这里是第一个片段结尾的文字内容。",
-    "这里是第二个片段结尾的文字内容。"
-  ]
-}}
-"""
+    def _semantic_split_with_llamaindex(self, text: str, target_size: int, section_meta: Dict[str, Any]) -> List[Dict[str, Any]]:
+        """使用 LlamaIndex Node Parsers 执行语义切分（不依赖业务 LLM 调用）。"""
         try:
-            response = await self.llm.generate_text(
-                prompt,
-                max_tokens=1000,
-                temperature=0.1,
-                module_name="document_analysis"
+            from llama_index.core import Document
+            from llama_index.core.node_parser import SentenceSplitter
+        except Exception as import_error:
+            logger.warning(f"LlamaIndex 未安装或导入失败，回退本地规则切分: {import_error}")
+            return []
+
+        try:
+            safe_size = max(100, int(target_size or DEFAULT_CHUNK_SIZE))
+            splitter = SentenceSplitter(
+                chunk_size=safe_size,
+                chunk_overlap=max(20, min(80, safe_size // 8)),
+                paragraph_separator="\n\n",
             )
-            text_response = str(response).strip()
-            if "```json" in text_response:
-                text_response = text_response.split("```json")[1].split("```")[0]
-            elif "```" in text_response:
-                text_response = text_response.split("```")[1].split("```")[0]
-            
-            data = json.loads(text_response)
-            split_points = data.get("split_points", [])
-            
-            if not split_points:
-                return self._fallback_semantic_split(text, target_size)
+            nodes = splitter.get_nodes_from_documents([
+                Document(text=text, metadata={"section_title": section_meta.get("title", "")})
+            ])
 
             chunks = []
-            current_pos = 0
-            last_found_pos = 0
-            
-            for point in split_points:
-                point = point.strip()
-                if not point:
-                    continue
-                
-                idx = text.find(point, current_pos)
-                
-                if idx == -1:
-                    idx = self._fuzzy_find(text, point, current_pos, threshold=0.85)
-                    if idx != -1:
-                        logger.warning(f"LLM切分点模糊匹配成功: '{point[:20]}...' at position {idx}")
-                
-                if idx != -1:
-                    split_idx = idx + len(point)
-                    chunk_text = text[last_found_pos:split_idx].strip()
-                    if chunk_text:
-                        chunks.append({"text": chunk_text})
-                    last_found_pos = split_idx
-                    current_pos = split_idx
-                else:
-                    logger.warning(f"LLM切分点定位失败，跳过: '{point[:30]}...'")
-            
-            if last_found_pos < len(text):
-                remaining = text[last_found_pos:].strip()
-                if remaining:
-                    chunks.append({"text": remaining})
-            
-            if not chunks:
-                return self._fallback_semantic_split(text, target_size)
-            
+            for node in nodes:
+                node_text = ""
+                if hasattr(node, "get_content"):
+                    node_text = str(node.get_content() or "").strip()
+                elif hasattr(node, "text"):
+                    node_text = str(node.text or "").strip()
+                if node_text:
+                    chunks.append({"text": node_text})
             return chunks
         except Exception as e:
-            logger.error(f"LLM语义切分识别失败: {e}")
-            return self._fallback_semantic_split(text, target_size)
+            logger.error(f"LlamaIndex Node Parser 语义切分失败: {e}")
+            return []
 
     def _fallback_semantic_split(self, text, target_size):
         """稳健的语义切分逻辑（无重叠）"""
@@ -523,6 +476,7 @@ class ChunkingService:
             r'^\s*((第[一二三四五六七八九十百千万0-9]+[章节条款项])|([一二三四五六七八九十]+[、.]))|(\d+[、.)）])'
         )
         self._table_doc_types = {"费率表", "现金价值表"}
+        self._valid_knowledge_types = ["概念定义", "规则约束", "流程操作", "数据数值", "触发条件", "事实陈述", "异常除外"]
 
     @property
     def llm(self):
@@ -627,6 +581,7 @@ class ChunkingService:
             chunks = self._merge_chunk_dicts_document_level(chunks, short_threshold)
             chunks = self._split_chunk_dicts_by_max_chars(chunks, max_chars, short_threshold)
         chunks = self._reindex_chunk_dicts(chunks, text)
+        await self._batch_infer_knowledge_types(chunks)
         return chunks
 
     def _flatten_outline(self, outline: List[Dict[str, Any]], level: int = 1) -> List[Dict[str, Any]]:
@@ -647,7 +602,7 @@ class ChunkingService:
             if not str(k).startswith("_chunking_")
         }
         knowledge_type_raw = section_meta.get("knowledge_type")
-        knowledge_type = await self._normalize_or_infer_knowledge_type(knowledge_type_raw, text, section_meta)
+        knowledge_type = self._normalize_knowledge_type_value(knowledge_type_raw) or ["事实陈述"]
         
         return {
             "content": text,
@@ -669,71 +624,95 @@ class ChunkingService:
             }
         }
 
-    async def _normalize_or_infer_knowledge_type(self, value: Any, text: str, section_meta: Dict[str, Any]) -> List[str]:
-        valid_types = ["概念定义", "规则约束", "流程操作", "数据数值", "触发条件", "事实陈述", "异常除外"]
-        
-        # 截取合理的文本长度，防止LLM token超限
-        sample_text = str(text or "")[:1500]
-        if not sample_text.strip():
-            return ["事实陈述"]
-            
-        section_title = section_meta.get("title", "")
-        breadcrumb_path = section_meta.get("breadcrumb_path", "")
-        
-        prompt = f"""
+    def _normalize_knowledge_type_value(self, value: Any) -> List[str]:
+        if isinstance(value, str):
+            return [value] if value in self._valid_knowledge_types else []
+        if isinstance(value, list):
+            filtered = [v for v in value if v in self._valid_knowledge_types]
+            return filtered if filtered else []
+        return []
+
+    async def _batch_infer_knowledge_types(self, chunks: List[Dict[str, Any]], batch_size: int = 20):
+        """批量调用 LLM 进行知识类型判断，避免逐片段调用造成 token 激增。"""
+        if not chunks or not self.llm:
+            return
+
+        fallback = ["事实陈述"]
+        candidates = []
+        for idx, chunk in enumerate(chunks):
+            content = str(chunk.get("content") or "").strip()
+            if not content:
+                chunk.setdefault("metadata", {})["knowledge_type"] = fallback
+                continue
+
+            metadata = chunk.setdefault("metadata", {})
+            normalized_existing = self._normalize_knowledge_type_value(metadata.get("knowledge_type"))
+            metadata["knowledge_type"] = normalized_existing or fallback
+
+            candidates.append({
+                "index": idx,
+                "section_title": metadata.get("section_title", ""),
+                "breadcrumb_path": metadata.get("breadcrumb_path", ""),
+                "text": content[:1000]
+            })
+
+        if not candidates:
+            return
+
+        for i in range(0, len(candidates), batch_size):
+            batch = candidates[i:i + batch_size]
+            prompt = f"""
 你是一个专业的保险与制度文档知识分类专家。
-请根据以下文本内容及其所在的章节上下文，判断该文本属于哪些知识类型。
+请基于每条文本及其上下文，给出知识类型（可多选）。
 
-可选的知识类型列表：
-{json.dumps(valid_types, ensure_ascii=False)}
+可选知识类型：
+{json.dumps(self._valid_knowledge_types, ensure_ascii=False)}
 
-文本上下文：
-- 章节标题: {section_title}
-- 章节路径: {breadcrumb_path}
+输入数据：
+{json.dumps(batch, ensure_ascii=False)}
 
-待分类文本内容：
-{sample_text}
-
-要求：
-1. 文本可能同时具备多种知识类型，请返回一个数组，包含所有符合的知识类型。
-2. 如果文本没有明显的上述特征，请返回 ["事实陈述"]。
-3. 请只返回 JSON 数组格式，不要包含任何其他文字。
-
-返回格式示例：
-["触发条件", "规则约束"]
+输出要求：
+1. 只输出 JSON。
+2. 输出格式必须为：
+{{
+  "results": [
+    {{"index": 0, "knowledge_type": ["事实陈述"]}}
+  ]
+}}
+3. 每个 index 都必须返回；若不确定则返回 ["事实陈述"]。
 """
-        
-        if not self.llm:
-            logger.warning("未配置 LLM，退回默认单标签分类")
-            return ["事实陈述"]
+            try:
+                response = await self.llm.generate_text(
+                    prompt,
+                    max_tokens=min(4000, 300 + len(batch) * 120),
+                    temperature=0.1,
+                    module_name="document_analysis"
+                )
+                text_response = str(response).strip()
+                if "```json" in text_response:
+                    text_response = text_response.split("```json")[1].split("```")[0]
+                elif "```" in text_response:
+                    text_response = text_response.split("```")[1].split("```")[0]
 
-        try:
-            response = await self.llm.generate_text(
-                prompt,
-                max_tokens=100,
-                temperature=0.1,
-                module_name="document_analysis"
-            )
-            text_response = str(response).strip()
-            
-            # 提取 JSON 数组
-            if "```json" in text_response:
-                text_response = text_response.split("```json")[1].split("```")[0]
-            elif "```" in text_response:
-                text_response = text_response.split("```")[1].split("```")[0]
-                
-            types = json.loads(text_response)
-            
-            if isinstance(types, list) and len(types) > 0:
-                # 过滤出在 valid_types 中的类型
-                filtered_types = [t for t in types if t in valid_types]
-                if filtered_types:
-                    return filtered_types
-            
-            return ["事实陈述"]
-        except Exception as e:
-            logger.error(f"LLM 知识类型分类失败: {e}")
-            return ["事实陈述"]
+                parsed = json.loads(text_response)
+                results = parsed.get("results", []) if isinstance(parsed, dict) else []
+                by_index = {}
+                for item in results:
+                    if not isinstance(item, dict):
+                        continue
+                    idx = item.get("index")
+                    types = self._normalize_knowledge_type_value(item.get("knowledge_type"))
+                    if isinstance(idx, int):
+                        by_index[idx] = types or fallback
+
+                for item in batch:
+                    chunk_idx = item["index"]
+                    chunks[chunk_idx].setdefault("metadata", {})["knowledge_type"] = by_index.get(chunk_idx, fallback)
+            except Exception as e:
+                logger.error(f"LLM 批量知识类型分类失败: {e}")
+                for item in batch:
+                    chunk_idx = item["index"]
+                    chunks[chunk_idx].setdefault("metadata", {})["knowledge_type"] = fallback
 
     def _is_complete_sentence_end(self, text: str) -> bool:
         t = str(text or "").strip()
@@ -979,6 +958,7 @@ class ChunkingService:
             chunks = self._merge_chunk_dicts_document_level(chunks, short_threshold)
             chunks = self._split_chunk_dicts_by_max_chars(chunks, max_chars, short_threshold)
         chunks = self._reindex_chunk_dicts(chunks, text)
+        await self._batch_infer_knowledge_types(chunks)
         return chunks
 
     def chunk_by_semantic(self, text: str, min_chunk_size: int = 200, max_chunk_size: int = 1000, metadata: Dict[str, Any] = None) -> List[Dict[str, Any]]:

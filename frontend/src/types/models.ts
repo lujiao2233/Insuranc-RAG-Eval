@@ -135,14 +135,23 @@ export interface TokenResponse {
 }
 
 export interface TaskStatus {
-  task_id: string
-  status: string
+  id: string
+  type: string
+  status: 'pending' | 'running' | 'cancelling' | 'cancelled' | 'finished' | 'failed'
   progress: number
+  message: string
   logs: string[]
   result?: any
   error?: string
-  total_questions?: number
-  evaluated_questions?: number
+  params?: Record<string, any>
+  current_step?: number | null
+  total_steps?: number | null
+  created_at?: string | null
+  updated_at?: string | null
+  started_at?: string | null
+  finished_at?: string | null
+  can_cancel?: boolean
+  can_retry?: boolean
 }
 
 export interface ApiStatus {

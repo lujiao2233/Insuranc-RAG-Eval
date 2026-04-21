@@ -20,6 +20,7 @@
 import { ref, computed, watch, onMounted, onUnmounted, nextTick } from 'vue'
 import * as echarts from 'echarts'
 import type { ECharts, EChartsOption } from 'echarts'
+import { registerTheme } from '@/utils/echarts/theme'
 
 interface MetricData {
   name: string
@@ -92,6 +93,7 @@ const getRadarOption = (): EChartsOption => {
   return {
     tooltip: {
       trigger: 'item',
+      confine: true,
       formatter: (params: any) => {
         const values = params.value
         let html = `<div style="font-weight:600;margin-bottom:8px;">${params.name}</div>`
@@ -104,26 +106,7 @@ const getRadarOption = (): EChartsOption => {
     radar: {
       indicator,
       center: ['50%', '55%'],
-      radius: '65%',
-      axisName: {
-        color: '#606266',
-        fontSize: 12
-      },
-      splitArea: {
-        areaStyle: {
-          color: ['#f5f7fa', '#fff']
-        }
-      },
-      axisLine: {
-        lineStyle: {
-          color: '#dcdfe6'
-        }
-      },
-      splitLine: {
-        lineStyle: {
-          color: '#dcdfe6'
-        }
-      }
+      radius: '65%'
     },
     series: [{
       type: 'radar',
@@ -134,16 +117,16 @@ const getRadarOption = (): EChartsOption => {
         symbolSize: 6,
         lineStyle: {
           width: 2,
-          color: props.colors[0]
+          color: props.colors[0] || '#2563eb'
         },
         areaStyle: {
           color: new echarts.graphic.LinearGradient(0, 0, 0, 1, [
-            { offset: 0, color: `${props.colors[0]}80` },
-            { offset: 1, color: `${props.colors[0]}20` }
+            { offset: 0, color: `${props.colors[0] || '#2563eb'}80` },
+            { offset: 1, color: `${props.colors[0] || '#2563eb'}20` }
           ])
         },
         itemStyle: {
-          color: props.colors[0]
+          color: props.colors[0] || '#2563eb'
         }
       }]
     }]
@@ -154,6 +137,7 @@ const getBarOption = (): EChartsOption => {
   return {
     tooltip: {
       trigger: 'axis',
+      confine: true,
       axisPointer: {
         type: 'shadow'
       },
@@ -318,6 +302,7 @@ const getLineOption = (): EChartsOption => {
   return {
     tooltip: {
       trigger: 'axis',
+      confine: true,
       formatter: (params: any) => {
         const item = params[0]
         return `<div style="font-weight:600;">${item.name}</div>
@@ -406,7 +391,8 @@ const getOption = (): EChartsOption => {
 const initChart = () => {
   if (!chartRef.value) return
 
-  chartInstance = echarts.init(chartRef.value)
+  registerTheme()
+  chartInstance = echarts.init(chartRef.value, 'saas')
   chartInstance.setOption(getOption())
 
   chartInstance.on('click', (params) => {
@@ -449,17 +435,17 @@ defineExpose({
 
 <style lang="scss" scoped>
 .metrics-chart {
-  background-color: #fff;
-  border-radius: 8px;
+  background-color: var(--bg-card, #ffffff);
+  border-radius: var(--radius-8, 8px);
   padding: 16px;
 
   .chart-title {
-    font-size: 16px;
-    font-weight: 600;
-    color: #303133;
+    font-size: var(--font-16, 16px);
+    font-weight: var(--fw-600, 600);
+    color: var(--text-1, #303133);
     margin-bottom: 16px;
     padding-bottom: 12px;
-    border-bottom: 1px solid #ebeef5;
+    border-bottom: 1px solid var(--border-1, #ebeef5);
   }
 
   .chart-content {
@@ -472,7 +458,7 @@ defineExpose({
     gap: 16px;
     margin-top: 16px;
     padding-top: 16px;
-    border-top: 1px solid #ebeef5;
+    border-top: 1px solid var(--border-1, #ebeef5);
 
     .legend-item {
       display: flex;
@@ -486,14 +472,14 @@ defineExpose({
       }
 
       .legend-label {
-        font-size: 13px;
-        color: #606266;
+        font-size: var(--font-14, 14px);
+        color: var(--text-2, #606266);
       }
 
       .legend-value {
-        font-size: 13px;
-        font-weight: 600;
-        color: #303133;
+        font-size: var(--font-14, 14px);
+        font-weight: var(--fw-600, 600);
+        color: var(--text-1, #303133);
       }
     }
   }

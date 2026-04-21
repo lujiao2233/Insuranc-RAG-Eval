@@ -1,9 +1,9 @@
 <template>
-  <div class="testsets-view">
-    <el-card>
+  <div class="page testsets-page">
+    <el-card shadow="never" class="section" :body-style="{ padding: '16px' }">
       <template #header>
         <div class="card-header">
-          <span>测试集管理</span>
+          <span class="page-title">测试集管理</span>
           <el-button type="primary" @click="router.push('/testsets/new')">
             <el-icon><Plus /></el-icon>
             新建测试集
@@ -12,21 +12,21 @@
       </template>
       
       <!-- 筛选栏 -->
-      <div class="filter-bar mb-4">
+      <div class="filter-bar section-sm">
         <el-input
           v-model="searchQuery"
           placeholder="搜索测试集名称或描述"
-          style="width: 300px; margin-right: 10px;"
+          style="width: 300px;"
           clearable
           @input="filterTestsets"
         />
-        
       </div>
       
       <el-table
         v-loading="loading"
         :data="paginatedTestsets"
         style="width: 100%"
+        size="small"
       >
         <el-table-column prop="name" label="名称" min-width="200">
           <template #default="{ row }">
@@ -52,21 +52,19 @@
             {{ formatDateTime(row.create_time) }}
           </template>
         </el-table-column>
-        <el-table-column label="操作" width="170" fixed="right">
+        <el-table-column label="操作" width="220" fixed="right">
           <template #default="{ row }">
             <div class="button-row">
-              <el-button type="primary" size="small" class="fixed-width-btn" @click="viewTestset(row.id)">
+              <el-button link type="primary" size="small" @click="viewTestset(row.id)">
                 查看
               </el-button>
-              <el-button type="success" size="small" class="fixed-width-btn" @click="goExecutePage(row)">
+              <el-button link type="primary" size="small" @click="goExecutePage(row)">
                 执行
               </el-button>
-            </div>
-            <div class="button-row">
-              <el-button type="warning" size="small" class="fixed-width-btn" @click="handleExportCSV(row)">
+              <el-button link type="primary" size="small" @click="handleExportCSV(row)">
                 导出
               </el-button>
-              <el-button type="danger" size="small" class="fixed-width-btn" @click="handleDelete(row)">
+              <el-button link type="danger" size="small" @click="handleDelete(row)">
                 删除
               </el-button>
             </div>
@@ -676,6 +674,12 @@ const pollExecutionTaskStatus = async (taskId: string) => {
       const task = await testsetApi.getTaskStatus(taskId)
       
       executionInfo.stage = task.message || task.status
+      if (typeof task.total_steps === 'number' && task.total_steps > 0) {
+        executionInfo.total = task.total_steps
+      }
+      if (typeof task.current_step === 'number') {
+        executionInfo.current = task.current_step
+      }
       if (typeof task.progress === 'number' && executionInfo.total > 0) {
         const currentByProgress = Math.round(task.progress * executionInfo.total)
         if (currentByProgress > executionInfo.current) {
@@ -709,6 +713,13 @@ const pollExecutionTaskStatus = async (taskId: string) => {
         
         ElMessage.success('测试集执行完成')
         fetchTestsets()
+        
+      } else if (task.status === 'cancelled') {
+        executing.value = false
+        executionFailed.value = true
+        executionInfo.stage = '执行已取消'
+        executionInfo.logs.push(task.message || '任务已取消')
+        ElMessage.warning(task.message || '测试集执行已取消')
         
       } else if (task.status === 'failed') {
         executing.value = false
@@ -851,6 +862,13 @@ const pollTaskStatus = async (taskId: string, testsetId: string) => {
         ElMessage.success(`测试集创建成功，共生成 ${generatedQuestions.value.length} 个问题`)
         await fetchTestsets()
         
+      } else if (task.status === 'cancelled') {
+        generating.value = false
+        generationFailed.value = true
+        progressInfo.stage = '生成已取消'
+        progressInfo.logs.push(task.message || '任务已取消')
+        ElMessage.warning(task.message || '测试集生成已取消')
+
       } else if (task.status === 'failed') {
         generating.value = false
         generationFailed.value = true
@@ -991,7 +1009,13 @@ onActivated(() => {
 </script>
 
 <style lang="scss" scoped>
-.testsets-view {
+.testsets-page {
+  .page-title {
+    font-size: var(--font-16, 16px);
+    font-weight: var(--fw-600, 600);
+    color: var(--text-1, #303133);
+  }
+
   .card-header {
     display: flex;
     justify-content: space-between;
@@ -1001,42 +1025,25 @@ onActivated(() => {
   .filter-bar {
     display: flex;
     gap: 10px;
-    margin-bottom: 16px;
     align-items: center;
   }
   
   .pagination-container {
     display: flex;
-    justify-content: center;
-    margin-top: 16px;
+    justify-content: flex-end;
+    margin-top: var(--space-16, 16px);
   }
 
   .button-row {
     display: flex;
     gap: 8px;
-    margin-bottom: 6px;
-  }
-
-  .button-row:last-child {
-    margin-bottom: 0;
-  }
-
-  .fixed-width-btn {
-    width: 64px;
-  }
-  
-  .mb-4 {
-    margin-bottom: 1rem;
-  }
-  
-  .mt-4 {
-    margin-top: 1rem;
+    align-items: center;
   }
   
   .generation-config {
     .form-help {
-      font-size: 12px;
-      color: #909399;
+      font-size: var(--font-12, 12px);
+      color: var(--text-2, #909399);
       margin-top: 4px;
       line-height: 1.4;
     }
@@ -1071,22 +1078,22 @@ onActivated(() => {
         display: flex;
         justify-content: space-between;
         margin-top: 10px;
-        font-size: 14px;
-        color: #606266;
+        font-size: var(--font-14, 14px);
+        color: var(--text-2, #606266);
       }
       
       .progress-logs {
         margin-top: 15px;
         max-height: 200px;
         overflow-y: auto;
-        background: #f5f7fa;
+        background: var(--bg-app, #f5f7fa);
         padding: 10px;
-        border-radius: 4px;
-        font-size: 12px;
+        border-radius: var(--radius-8, 8px);
+        font-size: var(--font-12, 12px);
         
         .log-item {
           padding: 4px 0;
-          border-bottom: 1px solid #ebeef5;
+          border-bottom: 1px solid var(--border-1, #ebeef5);
           
           &:last-child {
             border-bottom: none;
@@ -1096,22 +1103,38 @@ onActivated(() => {
     }
     
     .result-stats {
-      margin-top: 20px;
+      margin-top: var(--space-24, 24px);
       padding: 15px;
-      background: #f5f7fa;
-      border-radius: 4px;
+      background: var(--bg-app, #f5f7fa);
+      border-radius: var(--radius-8, 8px);
     }
     
     .result-table {
-      margin-top: 20px;
+      margin-top: var(--space-24, 24px);
       
       .more-hint {
         text-align: center;
         padding: 10px;
-        color: #909399;
-        font-size: 12px;
+        color: var(--text-2, #909399);
+        font-size: var(--font-12, 12px);
       }
     }
+  }
+}
+
+:deep(.el-card__header) {
+  padding: 16px;
+  border-bottom: 1px solid var(--border-1, #ebeef5);
+}
+
+:deep(.el-table) {
+  --el-table-header-bg-color: var(--bg-app, #f8fafc);
+  --el-table-header-text-color: var(--text-2, #606266);
+  border-radius: var(--radius-8, 8px);
+  overflow: hidden;
+  
+  th.el-table__cell {
+    font-weight: 500;
   }
 }
 </style>

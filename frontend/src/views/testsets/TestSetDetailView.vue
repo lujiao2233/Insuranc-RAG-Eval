@@ -1,20 +1,18 @@
 <template>
-  <div class="testset-detail" v-loading="loading">
-    <el-page-header @back="$router.back()">
+  <div class="page testset-detail-page" v-loading="loading">
+    <el-page-header @back="$router.back()" class="section">
       <template #content>
-        <span class="text-large font-600 mr-3">{{ testset?.name }}</span>
+        <span class="page-title">{{ testset?.name }}</span>
       </template>
     </el-page-header>
     
-    <el-divider />
-    
     <template v-if="testset">
-      <el-row :gutter="20">
+      <el-row :gutter="24" class="section">
         <el-col :span="18">
-          <el-card>
+          <el-card shadow="never">
             <template #header>
               <div class="card-header">
-                <span>问题列表</span>
+                <span class="card-title">问题列表</span>
                 <div>
                   <el-button type="primary" @click="showAddDialog = true">
                     <el-icon><Plus /></el-icon>
@@ -36,12 +34,12 @@
             </template>
             
             <!-- 问题筛选 -->
-            <div class="filter-bar mb-3">
+            <div class="filter-bar section-sm">
               <el-select 
                 v-model="questionTypeFilter" 
                 placeholder="问题类型" 
                 clearable
-                style="width: 150px; margin-right: 10px;"
+                style="width: 150px;"
                 @change="filterQuestions"
               >
                 <el-option
@@ -56,7 +54,7 @@
                 v-model="categoryMajorFilter" 
                 placeholder="主要分类" 
                 clearable
-                style="width: 150px; margin-right: 10px;"
+                style="width: 150px;"
                 @change="filterQuestions"
               >
                 <el-option label="基础理解类" value="基础理解类" />
@@ -70,7 +68,7 @@
               <el-input
                 v-model="questionSearch"
                 placeholder="搜索问题"
-                style="width: 200px; margin-right: 10px;"
+                style="width: 200px;"
                 @input="filterQuestions"
                 clearable
               />
@@ -79,6 +77,7 @@
             <el-table 
               :data="paginatedQuestions" 
               style="width: 100%"
+              size="small"
               :default-sort="{ prop: 'question_type', order: 'ascending' }"
             >
               <el-table-column prop="question" label="问题" min-width="250">
@@ -108,13 +107,13 @@
                   <el-text truncated>{{ row.expected_answer || '-' }}</el-text>
                 </template>
               </el-table-column>
-              <el-table-column label="操作" width="170" fixed="right">
+              <el-table-column label="操作" width="120" fixed="right">
                 <template #default="{ row }">
                   <div class="button-row">
-                    <el-button type="primary" size="small" class="fixed-width-btn" @click="editQuestion(row)">
+                    <el-button link type="primary" size="small" @click="editQuestion(row)">
                       编辑
                     </el-button>
-                    <el-button type="danger" size="small" class="fixed-width-btn" @click="deleteQuestion(row)">
+                    <el-button link type="danger" size="small" @click="deleteQuestion(row)">
                       删除
                     </el-button>
                   </div>
@@ -122,7 +121,7 @@
               </el-table-column>
             </el-table>
             
-            <div class="pagination-container mt-4">
+            <div class="pagination-container section-sm">
               <el-pagination
                 v-model:current-page="currentPage"
                 v-model:page-size="pageSize"
@@ -137,9 +136,9 @@
         </el-col>
         
         <el-col :span="6">
-          <el-card>
+          <el-card shadow="never" class="section">
             <template #header>
-              <span>操作</span>
+              <span class="card-title">操作</span>
             </template>
             
             <div class="action-buttons">
@@ -147,11 +146,11 @@
                 <el-icon><DataLine /></el-icon>
                 执行测试
               </el-button>
-              <el-button type="success" @click="exportTestset">
+              <el-button @click="exportTestset">
                 <el-icon><Download /></el-icon>
                 导出测试集
               </el-button>
-              <el-button type="warning" @click="showGenerateConfig = true">
+              <el-button @click="showGenerateConfig = true">
                 <el-icon><Setting /></el-icon>
                 重新生成
               </el-button>
@@ -162,9 +161,9 @@
             </div>
           </el-card>
           
-          <el-card class="mt-4">
+          <el-card shadow="never" class="related-docs-card section">
             <template #header>
-              <span>关联文档</span>
+              <span class="card-title">关联文档</span>
             </template>
             
             <div class="document-list" v-if="relatedDocuments.length > 0">
@@ -599,6 +598,9 @@ const waitGenerationTaskFinished = async (taskId: string) => {
     if (task.status === 'finished') {
       return task
     }
+    if (task.status === 'cancelled') {
+      throw new Error(task.error || task.message || '任务已取消')
+    }
     if (task.status === 'failed') {
       throw new Error(task.error || task.message || '任务执行失败')
     }
@@ -726,7 +728,19 @@ onMounted(() => {
 </script>
 
 <style lang="scss" scoped>
-.testset-detail {
+.testset-detail-page {
+  .page-title {
+    font-size: var(--font-20, 20px);
+    font-weight: var(--fw-600, 600);
+    color: var(--text-1, #303133);
+  }
+
+  .card-title {
+    font-size: var(--font-16, 16px);
+    font-weight: var(--fw-600, 600);
+    color: var(--text-1, #303133);
+  }
+
   .card-header {
     display: flex;
     justify-content: space-between;
@@ -736,21 +750,13 @@ onMounted(() => {
   .filter-bar {
     display: flex;
     gap: 10px;
-    margin-bottom: 16px;
+    align-items: center;
   }
   
   .button-row {
     display: flex;
     gap: 8px;
-    margin-bottom: 6px;
-  }
-
-  .button-row:last-child {
-    margin-bottom: 0;
-  }
-
-  .fixed-width-btn {
-    width: 64px;
+    align-items: center;
   }
   
   .action-buttons {
@@ -763,9 +769,6 @@ onMounted(() => {
       width: 100%;
       justify-content: flex-start;
       text-align: left;
-    }
-
-    .el-button + .el-button {
       margin-left: 0;
     }
   }
@@ -776,14 +779,15 @@ onMounted(() => {
       align-items: center;
       gap: 8px;
       padding: 8px 0;
-      border-bottom: 1px solid #ebeef5;
+      border-bottom: 1px solid var(--border-1, #ebeef5);
+      color: var(--text-1, #303133);
 
       &:last-child {
         border-bottom: none;
       }
 
       .el-icon {
-        color: #409eff;
+        color: var(--brand-1, #2563eb);
         font-size: 16px;
       }
 
@@ -793,6 +797,7 @@ onMounted(() => {
         word-break: break-all;
         overflow-wrap: anywhere;
         line-height: 1.4;
+        font-size: var(--font-14, 14px);
       }
     }
   }
@@ -803,20 +808,28 @@ onMounted(() => {
   
   .pagination-container {
     display: flex;
-    justify-content: center;
-    margin-top: 16px;
+    justify-content: flex-end;
+    margin-top: var(--space-16, 16px);
   }
+}
+
+:deep(.el-card__header) {
+  padding: 16px;
+  border-bottom: 1px solid var(--border-1, #ebeef5);
+}
+
+:deep(.el-card) {
+  border-radius: var(--radius-8, 8px);
+}
+
+:deep(.el-table) {
+  --el-table-header-bg-color: var(--bg-app, #f8fafc);
+  --el-table-header-text-color: var(--text-2, #606266);
+  border-radius: var(--radius-8, 8px);
+  overflow: hidden;
   
-  .mb-3 {
-    margin-bottom: 1rem;
-  }
-  
-  .mt-3 {
-    margin-top: 1rem;
-  }
-  
-  .mt-4 {
-    margin-top: 1.5rem;
+  th.el-table__cell {
+    font-weight: 500;
   }
 }
 </style>

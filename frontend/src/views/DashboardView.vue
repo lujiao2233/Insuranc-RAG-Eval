@@ -1,161 +1,63 @@
 <template>
-  <div class="dashboard-view">
-    <el-row :gutter="20" class="stats-row">
-      <el-col :xs="24" :sm="12" :md="6">
-        <el-card class="stat-card">
-          <div class="stat-content">
-            <div class="stat-icon" style="background: #409eff;">
-              <el-icon :size="24"><Document /></el-icon>
-            </div>
-            <div class="stat-info">
-              <div class="stat-value">{{ stats.totalDocuments }}</div>
-              <div class="stat-label">文档总数</div>
-            </div>
-          </div>
-        </el-card>
-      </el-col>
-      
-      <el-col :xs="24" :sm="12" :md="6">
-        <el-card class="stat-card">
-          <div class="stat-content">
-            <div class="stat-icon" style="background: #67c23a;">
-              <el-icon :size="24"><Collection /></el-icon>
-            </div>
-            <div class="stat-info">
-              <div class="stat-value">{{ stats.totalTestsets }}</div>
-              <div class="stat-label">测试集</div>
-            </div>
-          </div>
-        </el-card>
-      </el-col>
-      
-      <el-col :xs="24" :sm="12" :md="6">
-        <el-card class="stat-card">
-          <div class="stat-content">
-            <div class="stat-icon" style="background: #e6a23c;">
-              <el-icon :size="24"><DataLine /></el-icon>
-            </div>
-            <div class="stat-info">
-              <div class="stat-value">{{ stats.totalEvaluations }}</div>
-              <div class="stat-label">评估任务</div>
-            </div>
-          </div>
-        </el-card>
-      </el-col>
-
-      <el-col :xs="24" :sm="12" :md="6">
-        <el-card class="stat-card stat-card--clickable" @click="goUsage">
-          <div class="stat-content">
-            <div class="stat-icon" style="background: #9c27b0;">
-              <el-icon :size="24"><Coin /></el-icon>
-            </div>
-            <div class="stat-info">
-              <div class="stat-value">{{ stats.totalTokens }}</div>
-              <div class="stat-label">Token 用量 (点击查看趋势)</div>
-            </div>
-          </div>
-        </el-card>
-      </el-col>
-    </el-row>
+  <div class="page dashboard-page">
+    <DashboardStats 
+      class="section" 
+      :stats="stats" 
+      @click-usage="goUsage" 
+    />
     
-    <el-row :gutter="20" class="module-row">
-      <el-col :span="24">
-        <el-card>
-          <template #header>
-            <div class="card-header">
-              <span>快捷操作</span>
-            </div>
-          </template>
-          <div class="quick-actions">
-            <el-button type="primary" @click="$router.push('/documents')">
-              <el-icon><Upload /></el-icon>
-              上传文档
-            </el-button>
-            <el-button type="success" @click="$router.push('/testsets')">
-              <el-icon><Collection /></el-icon>
-              创建测试集
-            </el-button>
-            <el-button type="warning" @click="$router.push('/evaluations')">
-              <el-icon><DataLine /></el-icon>
-              开始评估
-            </el-button>
-            <el-button type="info" @click="$router.push('/reports')">
-              <el-icon><DocumentCopy /></el-icon>
-              查看报告
-            </el-button>
-          </div>
-        </el-card>
-      </el-col>
-    </el-row>
+    <DashboardActions 
+      class="section" 
+      :routes="routes"
+      @navigate="handleNavigate" 
+    />
     
-    <el-row :gutter="20" class="module-row">
-      <el-col :xs="24" :md="12">
-        <el-card>
-          <template #header>
-            <div class="card-header">
-              <span>最近测试集</span>
-              <el-link type="primary" @click="$router.push('/testsets')">查看全部</el-link>
-            </div>
-          </template>
-          <el-table :data="recentTestsets" style="width: 100%">
-            <el-table-column prop="name" label="测试集名称" />
-            <el-table-column prop="question_count" label="问题数" width="90" />
-            <el-table-column prop="create_time" label="创建时间" width="180">
-              <template #default="{ row }">
-                {{ formatDate(row.create_time) }}
-              </template>
-            </el-table-column>
-          </el-table>
-        </el-card>
-      </el-col>
-      
-      <el-col :xs="24" :md="12">
-        <el-card>
-          <template #header>
-            <div class="card-header">
-              <span>最近评估</span>
-              <el-link type="primary" @click="$router.push('/evaluations')">查看全部</el-link>
-            </div>
-          </template>
-          <el-table :data="recentEvaluations" style="width: 100%">
-            <el-table-column prop="testset_name" label="测试集名称" min-width="180">
-              <template #default="{ row }">
-                {{ row.testset_name || '未知测试集' }}
-              </template>
-            </el-table-column>
-            <el-table-column prop="status" label="状态" width="100">
-              <template #default="{ row }">
-                <el-tag :type="getStatusType(row.status)">{{ getStatusText(row.status) }}</el-tag>
-              </template>
-            </el-table-column>
-            <el-table-column prop="created_at" label="创建时间" width="180">
-              <template #default="{ row }">
-                {{ formatDateTime(row.created_at || row.timestamp) }}
-              </template>
-            </el-table-column>
-          </el-table>
-        </el-card>
-      </el-col>
-    </el-row>
+    <DashboardRecentLists 
+      class="section"
+      :routes="routes"
+      :recent-testsets="recentTestsets" 
+      :recent-evaluations="recentEvaluations" 
+      @navigate="handleNavigate" 
+    />
   </div>
 </template>
 
 <script setup lang="ts">
-import { ref, onMounted } from 'vue'
+import { ref, watch } from 'vue'
 import { useRouter } from 'vue-router'
-import { Document, Collection, DataLine, Upload, DocumentCopy, Coin } from '@element-plus/icons-vue'
 import { documentApi } from '@/api/documents'
 import { evaluationApi } from '@/api/evaluations'
 import { testsetApi } from '@/api/testsets'
 import { usageApi } from '@/api/usage'
-import { formatDate, formatDateTime } from '@/utils/format'
 import { useAuthStore } from '@/stores/auth'
 import type { Evaluation, TestSet } from '@/types'
+
+import DashboardStats from '@/components/business/dashboard/DashboardStats.vue'
+import DashboardActions from '@/components/business/dashboard/DashboardActions.vue'
+import DashboardRecentLists from '@/components/business/dashboard/DashboardRecentLists.vue'
 
 const authStore = useAuthStore()
 const router = useRouter()
 
-const stats = ref({
+// 集中管理路由路径
+const routes = {
+  USAGE: '/usage',
+  DOCUMENTS: '/documents',
+  TESTSETS: '/testsets',
+  EVALUATIONS: '/evaluations',
+  REPORTS: '/reports'
+}
+
+export interface DashboardStatsModel {
+  totalDocuments: number
+  totalTestsets: number
+  totalEvaluations: number
+  totalTokens: number
+  totalCalls: number
+  avgLatency: number
+}
+
+const stats = ref<DashboardStatsModel>({
   totalDocuments: 0,
   totalTestsets: 0,
   totalEvaluations: 0,
@@ -164,31 +66,15 @@ const stats = ref({
   avgLatency: 0
 })
 
-const goUsage = () => {
-  router.push('/usage')
-}
-
 const recentTestsets = ref<TestSet[]>([])
 const recentEvaluations = ref<Evaluation[]>([])
 
-const getStatusType = (status: string) => {
-  const types: Record<string, string> = {
-    completed: 'success',
-    running: 'warning',
-    pending: 'info',
-    failed: 'danger'
-  }
-  return types[status] || 'info'
+const goUsage = () => {
+  router.push(routes.USAGE)
 }
 
-const getStatusText = (status: string) => {
-  const texts: Record<string, string> = {
-    completed: '已完成',
-    running: '进行中',
-    pending: '待处理',
-    failed: '失败'
-  }
-  return texts[status] || status
+const handleNavigate = (path: string) => {
+  router.push(path)
 }
 
 const fetchDashboardData = async () => {
@@ -250,74 +136,19 @@ const fetchDashboardData = async () => {
   }
 }
 
-onMounted(() => {
-  fetchDashboardData()
-})
+watch(
+  () => authStore.isAuthenticated,
+  (isAuthenticated) => {
+    if (isAuthenticated) {
+      fetchDashboardData()
+    }
+  },
+  { immediate: true }
+)
 </script>
 
 <style lang="scss" scoped>
-.dashboard-view {
-  .stats-row {
-    margin-bottom: 4px;
-  }
-
-  .module-row {
-    margin-top: 20px;
-  }
-
-  .stat-card {
-    .stat-content {
-      display: flex;
-      align-items: center;
-      
-      .stat-icon {
-        width: 56px;
-        height: 56px;
-        border-radius: 8px;
-        display: flex;
-        align-items: center;
-        justify-content: center;
-        color: #fff;
-        margin-right: 16px;
-      }
-      
-      .stat-info {
-        .stat-value {
-          font-size: 28px;
-          font-weight: bold;
-          color: #303133;
-        }
-        
-        .stat-label {
-          font-size: 14px;
-          color: #909399;
-          margin-top: 4px;
-        }
-      }
-    }
-  }
-  
-  .card-header {
-    display: flex;
-    justify-content: space-between;
-    align-items: center;
-  }
-  
-  .quick-actions {
-    display: flex;
-    gap: 12px;
-    flex-wrap: wrap;
-  }
-
-  .stat-card--clickable {
-    cursor: pointer;
-    transition: all 0.3s;
-    
-    &:hover {
-      transform: translateY(-2px);
-      box-shadow: 0 4px 12px rgba(0, 0, 0, 0.1);
-      border-color: var(--el-color-primary-light-5);
-    }
-  }
+.dashboard-page {
+  /* Dashboard 专属布局样式可放在这里，目前均已通过全局 class (.page, .section) 解决 */
 }
 </style>

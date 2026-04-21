@@ -2,3 +2,7 @@
 @use './mixins' as *;
 @use './reset';
 @use './common';
+
+/* 新增：tokens 和 element-plus 覆盖 */
+@use './tokens';
+@use './element-plus';

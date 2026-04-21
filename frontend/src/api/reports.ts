@@ -3,6 +3,7 @@ import type { PaginatedResponse } from '@/types'
 
 export interface Report {
   evaluation_id: string
+  testset_id?: string
   testset_name?: string
   evaluation_method?: string
   status?: string

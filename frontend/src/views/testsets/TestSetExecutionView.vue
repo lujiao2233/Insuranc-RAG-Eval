@@ -1,16 +1,15 @@
 <template>
-  <div class="testset-execution-view">
-    <el-page-header @back="$router.push('/testsets')">
+  <div class="page testset-execution-page">
+    <el-page-header @back="$router.push('/testsets')" class="section">
       <template #content>
-        <span class="text-large font-600">执行测试集</span>
+        <span class="page-title">执行测试集</span>
       </template>
     </el-page-header>
-    <el-divider />
 
-    <el-card>
+    <el-card shadow="never" class="section">
       <template #header>
         <div class="card-header">
-          <span>执行配置</span>
+          <span class="card-title">执行配置</span>
           <el-tag v-if="testset" type="info">{{ testset.name }}</el-tag>
         </div>
       </template>
@@ -150,6 +149,12 @@ const pollExecutionTaskStatus = (taskId: string) => {
       if (typeof task.progress === 'number') {
         taskProgressRatio.value = Math.max(0, Math.min(1, task.progress))
       }
+      if (typeof task.total_steps === 'number' && task.total_steps > 0) {
+        executionInfo.total = task.total_steps
+      }
+      if (typeof task.current_step === 'number') {
+        executionInfo.current = task.current_step
+      }
 
       // 兜底从阶段文本中提取进度，例如：正在处理第 4/14 题...
       const stageMatch = String(executionInfo.stage).match(/(\d+)\s*\/\s*(\d+)/)
@@ -168,7 +173,10 @@ const pollExecutionTaskStatus = (taskId: string) => {
             executionInfo.total = parseInt(match[2], 10)
             taskStore.updateTask(taskId, {
               progress: Math.round((taskProgressRatio.value || (executionInfo.current / executionInfo.total)) * 100),
-              status: 'running'
+              status: 'running',
+              message: task.message,
+              currentStep: task.current_step ?? undefined,
+              totalSteps: task.total_steps ?? undefined,
             })
           }
         }
@@ -183,6 +191,15 @@ const pollExecutionTaskStatus = (taskId: string) => {
         taskProgressRatio.value = 1
         taskStore.updateTask(taskId, { progress: 100, status: 'completed' })
         ElMessage.success('测试集执行完成')
+        return
+      }
+
+      if (task.status === 'cancelled') {
+        executing.value = false
+        executionFailed.value = true
+        executionInfo.stage = '执行已取消'
+        taskStore.updateTask(taskId, { status: 'cancelled', error: task.error || '任务已取消' })
+        ElMessage.warning(task.message || '测试集执行已取消')
         return
       }
 
@@ -271,7 +288,19 @@ onUnmounted(() => {
 </script>
 
 <style lang="scss" scoped>
-.testset-execution-view {
+.testset-execution-page {
+  .page-title {
+    font-size: var(--font-20, 20px);
+    font-weight: var(--fw-600, 600);
+    color: var(--text-1, #303133);
+  }
+
+  .card-title {
+    font-size: var(--font-16, 16px);
+    font-weight: var(--fw-600, 600);
+    color: var(--text-1, #303133);
+  }
+
   .card-header {
     display: flex;
     justify-content: space-between;
@@ -279,8 +308,8 @@ onUnmounted(() => {
   }
 
   .form-help {
-    font-size: 12px;
-    color: #909399;
+    font-size: var(--font-12, 12px);
+    color: var(--text-2, #909399);
     margin-top: 4px;
     line-height: 1.4;
   }
@@ -290,22 +319,23 @@ onUnmounted(() => {
       display: flex;
       justify-content: space-between;
       margin-top: 10px;
-      font-size: 14px;
-      color: #606266;
+      font-size: var(--font-14, 14px);
+      color: var(--text-2, #606266);
     }
 
     .progress-logs {
       margin-top: 15px;
       max-height: 220px;
       overflow-y: auto;
-      background: #f5f7fa;
+      background: var(--bg-app, #f5f7fa);
       padding: 10px;
-      border-radius: 4px;
-      font-size: 12px;
+      border-radius: var(--radius-8, 8px);
+      font-size: var(--font-12, 12px);
+      color: var(--text-1, #303133);
 
       .log-item {
         padding: 4px 0;
-        border-bottom: 1px solid #ebeef5;
+        border-bottom: 1px solid var(--border-1, #ebeef5);
 
         &:last-child {
           border-bottom: none;
@@ -313,5 +343,14 @@ onUnmounted(() => {
       }
     }
   }
+}
+
+:deep(.el-card__header) {
+  padding: 16px;
+  border-bottom: 1px solid var(--border-1, #ebeef5);
+}
+
+:deep(.el-card) {
+  border-radius: var(--radius-8, 8px);
 }
 </style>

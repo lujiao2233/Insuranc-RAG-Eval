@@ -1,5 +1,5 @@
 import { request } from './index'
-import type { Document, PaginatedResponse } from '@/types'
+import type { Document, PaginatedResponse, TaskStatus } from '@/types'
 
 export const documentApi = {
   getDocuments(params: {
@@ -69,7 +69,7 @@ export const documentApi = {
     return request.get(`/documents/${id}/chunks`, params)
   },
 
-  getTaskStatus(taskId: string): Promise<any> {
+  getTaskStatus(taskId: string): Promise<TaskStatus> {
     return request.get(`/testsets/tasks/${taskId}`)
   },
 

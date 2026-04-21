@@ -29,71 +29,6 @@ except Exception:
     DEEPEVAL_AVAILABLE = False
 
 
-def _mock_evaluate(rows: List[Dict[str, Any]], evaluation_metrics: List[str], start_time: float) -> Dict[str, Any]:
-    """模拟评估（当RAGAS/DeepEval不可用时）"""
-    import random
-    
-    results: List[Dict[str, Any]] = []
-    for row in rows:
-        metrics_out: Dict[str, float] = {}
-        for metric in evaluation_metrics:
-            metrics_out[metric] = round(random.uniform(0.6, 0.95), 4)
-        
-        ctx_value = row.get("contexts", [])
-        if isinstance(ctx_value, list):
-            context_str = ", ".join(str(c) for c in ctx_value)
-        else:
-            context_str = str(ctx_value) if ctx_value else ""
-        
-        results.append({
-            "question_id": row.get("question_id", ""),
-            "question": row.get("question", ""),
-            "expected_answer": row.get("ground_truth", ""),
-            "generated_answer": row.get("answer", ""),
-            "context": context_str,
-            "metrics": metrics_out,
-            "evaluation_time": time.time() - start_time,
-        })
-    
-    evaluation_time = time.time() - start_time
-    
-    all_metrics: Dict[str, List[float]] = {}
-    for result in results:
-        for metric, score in result.get("metrics", {}).items():
-            if metric not in all_metrics:
-                all_metrics[metric] = []
-            all_metrics[metric].append(float(score))
-    
-    overall_metrics: Dict[str, Dict[str, float]] = {}
-    for metric, scores in all_metrics.items():
-        if scores:
-            arr = np.array(scores, dtype=float)
-            overall_metrics[metric] = {
-                "mean": float(np.mean(arr)),
-                "std": float(np.std(arr)),
-                "min": float(np.min(arr)),
-                "max": float(np.max(arr)),
-                "median": float(np.median(arr)),
-            }
-    
-    if overall_metrics:
-        weighted_score = sum(m["mean"] for m in overall_metrics.values()) / len(overall_metrics)
-        overall_metrics["overall_score"] = {
-            "mean": weighted_score,
-            "interpretation": "良好" if weighted_score >= 0.8 else "一般" if weighted_score >= 0.7 else "较差"
-        }
-    
-    return {
-        "evaluation_id": f"eval_{int(time.time())}",
-        "evaluation_method": "mock",
-        "total_questions": len(rows),
-        "evaluated_questions": len(results),
-        "evaluation_time": evaluation_time,
-        "timestamp": datetime.now().strftime("%Y-%m-%d %H:%M"),
-        "individual_results": results,
-        "overall_metrics": overall_metrics,
-        "evaluation_metrics": evaluation_metrics,
-    }
 
 
 class RagasEvaluator:
@@ -111,12 +46,13 @@ class RagasEvaluator:
             "default_metrics": [
                 "answer_relevance",
                 "context_relevance",
+                "context_precision",
                 "faithfulness",
                 "answer_correctness",
                 "answer_similarity",
             ],
             "batch_size": 5,
-            "timeout": 300,
+            "timeout": 600,
             "max_workers": 4,
         }
 
@@ -335,7 +271,7 @@ class RagasEvaluator:
             raise RuntimeError("RAGAS评估依赖未安装，请安装 ragas 后重试")
 
         cfg = run_config or {}
-        self._configure_llm_environment(
+        runtime_cfg = self._configure_llm_environment(
             user_id=str(cfg.get("user_id")) if cfg.get("user_id") else None,
             db_session=cfg.get("db_session"),
             require_db_config=True,
@@ -369,7 +305,7 @@ class RagasEvaluator:
         if run_config:
             try:
                 from ragas.run_config import RunConfig
-                timeout = int(run_config.get("timeout", 300))
+                timeout = int(run_config.get("timeout", 600))
                 max_workers = int(run_config.get("max_workers", 4))
                 timeout = max(60, timeout)
                 max_workers = max(1, max_workers)
@@ -378,13 +314,91 @@ class RagasEvaluator:
             except (ImportError, Exception) as e:
                 logger.warning(f"构建 Ragas RunConfig 失败: {e}")
 
+        llm_wrapper = None
+        embeddings_wrapper = None
+
+        # 强制注入评估LLM，避免RAGAS回退到默认OpenAI模型（如 gpt-4o-mini）
         try:
-            from services.llm_service import get_llm_service
-            llm_service = get_llm_service(use_mock=False)
-            if hasattr(llm_service, '_langchain_llm'):
-                evaluate_kwargs["llm"] = llm_service._langchain_llm
+            from langchain_openai import ChatOpenAI
+            from ragas.llms.base import LangchainLLMWrapper
+
+            llm = ChatOpenAI(
+                model=(runtime_cfg or {}).get("model") or os.getenv("QWEN_MODEL", "qwen-plus"),
+                api_key=(runtime_cfg or {}).get("api_key") or os.getenv("OPENAI_API_KEY"),
+                base_url=(runtime_cfg or {}).get("base_url") or os.getenv("OPENAI_BASE_URL"),
+                temperature=0.0,
+                max_retries=1,
+                timeout=120,
+            )
+            llm_wrapper = LangchainLLMWrapper(llm)
+            evaluate_kwargs["llm"] = llm_wrapper
+            logger.info(
+                f"RAGAS评估LLM已注入: model={(runtime_cfg or {}).get('model')}, base_url={(runtime_cfg or {}).get('base_url')}"
+            )
         except Exception as e:
-            logger.warning(f"LLM服务构建失败: {e}")
+            logger.warning(f"构建RAGAS评估LLM失败，将使用RAGAS默认LLM: {e}")
+
+        # 强制注入Embedding模型，避免RAGAS回退到 text-embedding-ada-002
+        try:
+            import dashscope
+            from dashscope import TextEmbedding
+            from ragas.embeddings import LangchainEmbeddingsWrapper
+
+            embedding_model = (
+                os.getenv("DASHSCOPE_EMBEDDING_MODEL")
+                or os.getenv("EMBEDDING_MODEL")
+                or "text-embedding-v3"
+            )
+            dashscope.api_key = (runtime_cfg or {}).get("api_key") or os.getenv("DASHSCOPE_API_KEY")
+
+            class DashscopeLCEmbeddings:
+                def __init__(self, model_name: str):
+                    self.model = model_name
+
+                def _parse_embedding(self, resp):
+                    if hasattr(resp, "output") and resp.output and "embeddings" in resp.output:
+                        return resp.output["embeddings"][0]["embedding"]
+                    try:
+                        return resp["data"][0]["embedding"]
+                    except Exception:
+                        code = getattr(resp, "code", None)
+                        message = getattr(resp, "message", None)
+                        raise RuntimeError(f"DashScope embedding error: code={code}, message={message}")
+
+                def embed_query(self, text: str):
+                    resp = TextEmbedding.call(model=self.model, input=text)
+                    return self._parse_embedding(resp)
+
+                async def aembed_query(self, text: str):
+                    return self.embed_query(text)
+
+                def embed_documents(self, texts):
+                    out = []
+                    for t in texts:
+                        resp = TextEmbedding.call(model=self.model, input=t)
+                        out.append(self._parse_embedding(resp))
+                    return out
+
+                async def aembed_documents(self, texts):
+                    return self.embed_documents(texts)
+
+            lc_embeddings = DashscopeLCEmbeddings(embedding_model)
+            _ = lc_embeddings.embed_query("ping")
+            embeddings_wrapper = LangchainEmbeddingsWrapper(lc_embeddings)
+            evaluate_kwargs["embeddings"] = embeddings_wrapper
+            logger.info(f"RAGAS评估Embeddings已注入: model={embedding_model}")
+        except Exception as e:
+            logger.warning(f"构建RAGAS评估Embeddings失败，将使用RAGAS默认Embeddings: {e}")
+
+        # 对 ragas==0.1.x 显式回填到每个指标对象，避免其内部回退默认 OpenAI 工厂
+        for metric in ragas_metrics:
+            try:
+                if llm_wrapper is not None and hasattr(metric, "llm"):
+                    metric.llm = llm_wrapper
+                if embeddings_wrapper is not None and hasattr(metric, "embeddings"):
+                    metric.embeddings = embeddings_wrapper
+            except Exception as e:
+                logger.warning(f"绑定评估指标模型失败: metric={getattr(metric, 'name', metric.__class__.__name__)}, error={e}")
 
         ragas_result = ragas_evaluate(
             HFDataset.from_pandas(df),
@@ -473,6 +487,10 @@ class RagasEvaluator:
 
         from openai import OpenAI
         from deepeval.test_case import LLMTestCase
+        try:
+            from deepeval.test_case import LLMTestCaseParams
+        except Exception:
+            LLMTestCaseParams = None
         from deepeval.metrics import (
             AnswerRelevancyMetric,
             FaithfulnessMetric,
@@ -481,6 +499,24 @@ class RagasEvaluator:
             ToxicityMetric,
             BiasMetric,
         )
+        try:
+            from deepeval.metrics import ContextualPrecisionMetric
+        except Exception:
+            ContextualPrecisionMetric = None
+        try:
+            from deepeval.metrics import AnswerCorrectnessMetric
+        except Exception:
+            try:
+                from deepeval.metrics.answer_correctness.answer_correctness import AnswerCorrectnessMetric
+            except Exception:
+                try:
+                    from deepeval.metrics.answer_correctness import AnswerCorrectnessMetric
+                except Exception:
+                    AnswerCorrectnessMetric = None
+        try:
+            from deepeval.metrics import GEval
+        except Exception:
+            GEval = None
         from deepeval.models import DeepEvalBaseLLM
 
         class QwenDeepEvalLLM(DeepEvalBaseLLM):
@@ -506,7 +542,7 @@ class RagasEvaluator:
                     completion = client.chat.completions.create(
                         model=self.model,
                         messages=[
-                            {"role": "system", "content": "You are an evaluation assistant. Respond with only valid JSON."},
+                            {"role": "system", "content": "You are an evaluation assistant. Respond with only valid JSON. Ensure the `reason` field is written in Simplified Chinese (zh-CN)."},
                             {"role": "user", "content": prompt},
                         ],
                         temperature=self.temperature,
@@ -591,9 +627,70 @@ class RagasEvaluator:
             "toxicity": ToxicityMetric,
             "bias": BiasMetric,
         }
+        if ContextualPrecisionMetric is not None:
+            available_metrics["context_precision"] = ContextualPrecisionMetric
+        if AnswerCorrectnessMetric is not None:
+            available_metrics["answer_correctness"] = AnswerCorrectnessMetric
+        elif GEval is not None and LLMTestCaseParams is not None:
+            class AnswerCorrectnessCompatMetric:
+                def __init__(self, model, include_reason=True):
+                    self._metric = GEval(
+                        name="Answer Correctness",
+                        criteria=(
+                            "Assess whether the actual output is factually correct and consistent "
+                            "with the expected output. Give a score between 0 and 1."
+                        ),
+                        evaluation_params=[
+                            LLMTestCaseParams.INPUT,
+                            LLMTestCaseParams.ACTUAL_OUTPUT,
+                            LLMTestCaseParams.EXPECTED_OUTPUT,
+                        ],
+                        model=model,
+                    )
+                    self.score = 0.0
+                    self.reason = None
+
+                def measure(self, test_case):
+                    self._metric.measure(test_case)
+                    self.score = float(getattr(self._metric, "score", 0.0))
+                    self.reason = getattr(self._metric, "reason", None)
+
+            available_metrics["answer_correctness"] = AnswerCorrectnessCompatMetric
+
         metric_classes = self._map_deepeval_metrics(evaluation_metrics, available_metrics)
         if not metric_classes:
             raise RuntimeError("DeepEval评估指标加载失败")
+        missing_metrics = [m for m in evaluation_metrics if m not in metric_classes]
+        if missing_metrics:
+            raise RuntimeError(f"DeepEval当前环境不支持以下指标: {', '.join(missing_metrics)}")
+
+        def _contains_cjk(text: str) -> bool:
+            return any("\u4e00" <= ch <= "\u9fff" for ch in (text or ""))
+
+        def _translate_reason_to_zh(reason_text: str) -> str:
+            raw = str(reason_text or "").strip()
+            if not raw or _contains_cjk(raw):
+                return raw
+            try:
+                client = qwen_llm.load_model()
+                completion = client.chat.completions.create(
+                    model=qwen_llm.model,
+                    messages=[
+                        {
+                            "role": "system",
+                            "content": "你是专业翻译助手。请将用户提供的评估理由翻译为简体中文，只输出译文，不要添加解释。",
+                        },
+                        {"role": "user", "content": raw},
+                    ],
+                    temperature=0.0,
+                    max_tokens=1200,
+                )
+                if completion and completion.choices:
+                    translated = (completion.choices[0].message.content or "").strip()
+                    return translated or raw
+            except Exception as translate_error:
+                logger.warning(f"评估理由翻译失败，保留原文: {translate_error}")
+            return raw
 
         def evaluate_single_row(row: Dict[str, Any]) -> Dict[str, Any]:
             ctx_value = row.get("contexts")
@@ -608,6 +705,9 @@ class RagasEvaluator:
             a_val = str(row.get("answer", "")) if row.get("answer") else ""
             gt_val = str(row.get("ground_truth", "")) if row.get("ground_truth") else ""
             
+            if not a_val:
+                raise ValueError(f"问题 '{q_val[:50]}...' 的答案为空，无法进行评估")
+            
             test_case = LLMTestCase(
                 input=q_val,
                 actual_output=a_val,
@@ -618,6 +718,8 @@ class RagasEvaluator:
             
             metrics_out: Dict[str, float] = {}
             reasons_out: Dict[str, str] = {}
+            failed_metrics: List[str] = []
+            
             for metric_name, metric_cls in metric_classes.items():
                 try:
                     # 注入 include_reason=True 强制要求 LLM 输出评估理由
@@ -634,12 +736,18 @@ class RagasEvaluator:
                     if any(kw in error_msg for kw in ["api key", "unauthorized", "401", "403", "429", "connection", "timeout", "rate limit"]):
                         raise RuntimeError(f"大模型接口调用发生严重错误: {e}")
                     logger.warning(f"DeepEval metric {metric_name} 计算失败: {e}")
+                    failed_metrics.append(metric_name)
                     score_value = 0.0
                     reason_value = f"评估失败: {str(e)}"
                 
                 metrics_out[metric_name] = score_value
                 if reason_value:
-                    reasons_out[metric_name] = str(reason_value)
+                    reasons_out[metric_name] = _translate_reason_to_zh(str(reason_value))
+            
+            if len(failed_metrics) == len(metric_classes):
+                raise RuntimeError(f"问题 '{q_val[:50]}...' 的所有指标评估均失败: {', '.join(failed_metrics)}")
+            elif len(failed_metrics) > 0:
+                logger.warning(f"问题 '{q_val[:50]}...' 的部分指标评估失败: {', '.join(failed_metrics)}")
 
             context_value = row.get("contexts", [])
             if isinstance(context_value, list):
@@ -711,11 +819,13 @@ class RagasEvaluator:
                 AnswerCorrectness,
                 AnswerSimilarity,
                 ContextRecall,
+                ContextPrecision,
             )
 
             class_map = {
                 "answer_relevance": AnswerRelevancy,
                 "context_relevance": ContextRecall,
+                "context_precision": ContextPrecision,
                 "faithfulness": Faithfulness,
                 "answer_correctness": AnswerCorrectness,
                 "answer_similarity": AnswerSimilarity,
@@ -724,7 +834,7 @@ class RagasEvaluator:
             for m in metrics:
                 cls = class_map.get(m)
                 if cls:
-                    if m in ("answer_relevance", "context_relevance"):
+                    if m in ("answer_relevance", "context_relevance", "context_precision"):
                         out.append(cls(name=m))
                     else:
                         out.append(cls())
@@ -737,11 +847,13 @@ class RagasEvaluator:
                     answer_correctness,
                     answer_similarity,
                     context_recall,
+                    context_precision,
                 )
 
                 func_map = {
                     "answer_relevance": answer_relevancy,
                     "context_relevance": context_recall,
+                    "context_precision": context_precision,
                     "faithfulness": faithfulness,
                     "answer_correctness": answer_correctness,
                     "answer_similarity": answer_similarity,
@@ -794,6 +906,7 @@ class RagasEvaluator:
             weights = {
                 "answer_relevance": 0.2,
                 "context_relevance": 0.2,
+                "context_precision": 0.2,
                 "faithfulness": 0.2,
                 "answer_correctness": 0.2,
                 "answer_similarity": 0.2,

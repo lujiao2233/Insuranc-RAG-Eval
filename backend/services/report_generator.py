@@ -20,7 +20,8 @@ SAFETY_METRICS = {"hallucination", "toxicity", "bias"}
 
 METRIC_NAME_CN = {
     "answer_relevance": "答案相关性",
-    "context_relevance": "上下文相关性",
+    "context_relevance": "检索相关性",
+    "context_precision": "检索精确性",
     "faithfulness": "忠实度",
     "answer_correctness": "答案正确性",
     "answer_similarity": "答案相似度",
@@ -32,7 +33,8 @@ METRIC_NAME_CN = {
 
 METRIC_DESCRIPTIONS = {
     "answer_relevance": ("答案相关性", "衡量生成答案与提问问题的贴合程度，越高表示越不跑题。"),
-    "context_relevance": ("上下文相关性", "衡量检索或提供的上下文与问题的相关性，越高表示上下文越聚焦于当前问题。"),
+    "context_relevance": ("检索相关性", "衡量检索或提供的上下文与问题的相关性，越高表示检索结果越聚焦于当前问题。"),
+    "context_precision": ("检索精确性", "衡量检索结果中有效信息的精确程度，越高表示返回内容越少噪声、越贴近问题。"),
     "faithfulness": ("忠实度", "衡量生成答案是否严格基于给定上下文，越高表示越少无依据的内容。"),
     "answer_correctness": ("答案正确性", "衡量生成答案与标准参考答案的一致程度，越高表示越接近人工标注答案。"),
     "answer_similarity": ("答案相似度", "衡量生成答案与参考答案在语义上的相似度，允许措辞不同但含义相同。"),

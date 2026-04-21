@@ -8,7 +8,6 @@ from typing import List, Optional, Dict, Any
 from uuid import UUID
 import uuid
 import os
-import threading
 import io
 import csv
 from urllib.parse import quote
@@ -19,7 +18,7 @@ from config.database import get_db, SessionLocal
 from schemas import TestSetCreate, TestSetUpdate
 from models.database import User, TestSet as TestSetModel, Document, Question, Evaluation as EvaluationModel, EvaluationResult as EvaluationResultModel
 from services.question_generator import get_question_generator
-from services.task_manager import task_manager
+from services.task_manager import task_manager, TaskCancelledError
 from services.config_service import ConfigService
 from services.advanced_testset_generator import QWEN_TAXONOMY_V1
 from services.api_client import TalkApiClient
@@ -166,6 +165,13 @@ def _resolve_root_info(testset: TestSetModel) -> Dict[str, str]:
     root_testset_id = str(meta.get("root_testset_id") or testset.id)
     root_name = str(meta.get("root_name") or testset.name or "测试集")
     return {"root_testset_id": root_testset_id, "root_name": root_name}
+
+
+def _ensure_task_access(task: Dict[str, Any], user_id: str) -> None:
+    params = task.get("params") if isinstance(task, dict) else {}
+    owner_id = str((params or {}).get("user_id") or "").strip()
+    if owner_id and owner_id != str(user_id):
+        raise HTTPException(status_code=403, detail="无权访问该任务")
 
 
 def _next_execution_no(db: Session, user_id: str, root_testset_id: str) -> int:
@@ -375,7 +381,8 @@ async def import_testset_csv(
                 return str(value).strip()
         return ""
 
-    for row in rows:
+    has_model_answer = False
+    for row_idx, row in enumerate(rows, start=2):
         question_text = _pick_value(row, "question", "问题")
         if not question_text:
             continue
@@ -387,6 +394,9 @@ async def import_testset_csv(
         context = _pick_value(row, "context", "切片内容")
         source_document = _pick_value(row, "source_document", "来源文档")
         persona_profile = _pick_value(row, "persona_profile", "角色画像")
+
+        if answer:
+            has_model_answer = True
 
         metadata: Dict[str, Any] = {}
         if source_document:
@@ -408,6 +418,13 @@ async def import_testset_csv(
 
     if not parsed_questions:
         raise HTTPException(status_code=400, detail="CSV中未找到有效问题，请确认包含问题列")
+
+    missing_answers = [q for q in parsed_questions if not q["answer"]]
+    if missing_answers and has_model_answer:
+        raise HTTPException(
+            status_code=400, 
+            detail=f"CSV中有 {len(missing_answers)} 个问题缺少模型答案，无法进行评估。请确保所有问题的'模型答案'列都有内容，或清空该列后再上传。"
+        )
 
     question_type_count: Dict[str, int] = {}
     answered_count = 0
@@ -723,38 +740,82 @@ def _submit_generation_task(
 
     _ensure_generation_model_available(db, str(current_user.id))
 
-    task_id = task_manager.create_task(
+    task_id = task_manager.submit_task(
         task_type="generate_questions",
         params={
             "testset_id": str(testset_id),
+            "user_id": str(current_user.id),
             "num_questions": request.num_questions,
+            "question_types": request.question_types,
             "generation_mode": request.generation_mode,
-            "document_ids": request_doc_ids or None
+            "enable_safety_robustness": request.enable_safety_robustness,
+            "multi_doc_ratio": request.multi_doc_ratio,
+            "document_ids": request_doc_ids or None,
+            "persona_list": request.persona_list,
         }
     )
-
-    thread = threading.Thread(
-        target=_run_generation_task,
-        args=(
-            task_id,
-            str(testset_id),
-            str(current_user.id),
-            request.num_questions,
-            request.question_types,
-            request.generation_mode,
-            request.enable_safety_robustness,
-            request.multi_doc_ratio,
-            request_doc_ids or None,
-            request.persona_list
-        ),
-        daemon=True
-    )
-    thread.start()
 
     return {
         "task_id": task_id,
         "message": "任务已创建，请轮询状态接口获取进度"
     }
+
+
+def _delete_testset_record(db: Session, testset: TestSetModel) -> None:
+    question_ids = [
+        qid for (qid,) in db.query(Question.id).filter(
+            Question.testset_id == str(testset.id)
+        ).all()
+    ]
+
+    if question_ids:
+        db.query(EvaluationResultModel).filter(
+            EvaluationResultModel.question_id.in_(question_ids)
+        ).update(
+            {EvaluationResultModel.question_id: None},
+            synchronize_session=False
+        )
+
+        db.query(Question).filter(Question.id.in_(question_ids)).delete(
+            synchronize_session=False
+        )
+
+    db.delete(testset)
+
+
+def _cleanup_failed_generated_testset(
+    db: Session,
+    testset_id: str,
+    user_id: str,
+    allow_delete: bool
+) -> bool:
+    if not allow_delete:
+        return False
+
+    testset = db.query(TestSetModel).filter(
+        TestSetModel.id == testset_id,
+        TestSetModel.user_id == user_id
+    ).first()
+    if not testset:
+        return False
+
+    question_count = db.query(Question).filter(
+        Question.testset_id == testset_id
+    ).count()
+    if question_count > 0 or int(testset.question_count or 0) > 0:
+        return False
+
+    try:
+        _delete_testset_record(db, testset)
+        db.commit()
+        logger.info(f"已清理失败生成留下的空测试集: testset_id={testset_id}, user_id={user_id}")
+        return True
+    except Exception as cleanup_error:
+        db.rollback()
+        logger.warning(
+            f"清理失败生成测试集失败: testset_id={testset_id}, user_id={user_id}, error={cleanup_error}"
+        )
+        return False
 
 
 def _run_generation_task(
@@ -771,7 +832,9 @@ def _run_generation_task(
 ):
     """后台任务：生成测试问题"""
     db = SessionLocal()
+    had_existing_questions = True
     try:
+        task_manager.ensure_not_cancelled(task_id)
         # 仅保留 qwen_llm 生成分支
         generation_mode = "advanced"
         task_manager.update_status(task_id, "running")
@@ -785,6 +848,10 @@ def _run_generation_task(
         if not testset:
             task_manager.fail_task(task_id, "测试集不存在")
             return
+        had_existing_questions = (
+            int(testset.question_count or 0) > 0
+            or db.query(Question).filter(Question.testset_id == testset_id).count() > 0
+        )
         
         from models.database import DocumentChunk as ChunkModel
         target_doc_ids = [testset.document_id]
@@ -800,6 +867,7 @@ def _run_generation_task(
         documents_map = {str(d.id): d for d in documents}
         if len(documents_map) != len(target_doc_ids):
             task_manager.fail_task(task_id, "存在无权限或不存在的文档")
+            _cleanup_failed_generated_testset(db, testset_id, user_id, allow_delete=not had_existing_questions)
             return
 
         content_data = []
@@ -816,6 +884,7 @@ def _run_generation_task(
                     task_manager.fail_task(task_id, f"文档尚未分析：{document.filename}")
                 else:
                     task_manager.fail_task(task_id, f"文档缺少切片数据，请重新分析：{document.filename}")
+                _cleanup_failed_generated_testset(db, testset_id, user_id, allow_delete=not had_existing_questions)
                 return
             if chunks:
                 content_data.extend([{
@@ -836,6 +905,7 @@ def _run_generation_task(
         )
         if not content_data:
             task_manager.fail_task(task_id, "未获取到可用于生成的问题素材")
+            _cleanup_failed_generated_testset(db, testset_id, user_id, allow_delete=not had_existing_questions)
             return
 
         types_list = [t.strip() for t in question_types.split(",")] if question_types else None
@@ -847,13 +917,20 @@ def _run_generation_task(
             
             import re
             def _progress_callback(payload):
+                task_manager.ensure_not_cancelled(task_id)
                 text = str(payload or "")
                 task_manager.append_log(task_id, text)
                 m = re.search(r"第\s*(\d+)\s*/\s*(\d+)\s*题", text)
                 if m:
                     cur = int(m.group(1))
                     tot = max(int(m.group(2)), 1)
-                    task_manager.update_progress(task_id, cur / tot, f"生成进度 {cur}/{tot}")
+                    task_manager.update_progress(
+                        task_id,
+                        cur / tot,
+                        f"生成进度 {cur}/{tot}",
+                        current_step=cur,
+                        total_steps=tot,
+                    )
 
             params = {
                 "testset_size": num_questions,
@@ -870,8 +947,10 @@ def _run_generation_task(
             
             import asyncio
             generated_questions = asyncio.run(generator.generate_advanced_questions(content_data, params))
+            task_manager.ensure_not_cancelled(task_id)
             questions_list = generated_questions.get("questions", []) if isinstance(generated_questions, dict) else generated_questions
             for q in questions_list:
+                task_manager.ensure_not_cancelled(task_id)
                 if len(created_questions) >= num_questions:
                     break
                 normalized_type, normalized_major, normalized_minor = _normalize_question_category(
@@ -906,6 +985,7 @@ def _run_generation_task(
         
         if len(created_questions) == 0:
             task_manager.fail_task(task_id, "未能生成任何问题，请检查LLM配置是否正确")
+            _cleanup_failed_generated_testset(db, testset_id, user_id, allow_delete=not had_existing_questions)
             return
         
         task_manager.finish_task(
@@ -919,9 +999,16 @@ def _run_generation_task(
         )
         task_manager.append_log(task_id, f"生成完成，共 {len(created_questions)} 个问题")
         
+    except TaskCancelledError:
+        db.rollback()
+        task_manager.mark_cancelled(task_id, "测试集生成已取消")
+        task_manager.append_log(task_id, "任务已取消，停止生成")
+        _cleanup_failed_generated_testset(db, testset_id, user_id, allow_delete=not had_existing_questions)
     except Exception as e:
+        db.rollback()
         task_manager.fail_task(task_id, str(e))
         task_manager.append_log(task_id, f"生成失败: {e}")
+        _cleanup_failed_generated_testset(db, testset_id, user_id, allow_delete=not had_existing_questions)
     finally:
         db.close()
 
@@ -946,7 +1033,40 @@ async def get_task_status(
     task = task_manager.get_task(task_id)
     if not task:
         raise HTTPException(status_code=404, detail="任务不存在")
+    _ensure_task_access(task, str(current_user.id))
     return task
+
+
+@router.post("/tasks/{task_id}/cancel")
+async def cancel_task(
+    task_id: str,
+    current_user: User = Depends(get_current_active_user)
+):
+    """取消异步任务。"""
+    task = task_manager.get_task(task_id)
+    if not task:
+        raise HTTPException(status_code=404, detail="任务不存在")
+    _ensure_task_access(task, str(current_user.id))
+    try:
+        return task_manager.cancel_task(task_id)
+    except RuntimeError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+
+
+@router.post("/tasks/{task_id}/retry")
+async def retry_task(
+    task_id: str,
+    current_user: User = Depends(get_current_active_user)
+):
+    """重试失败或已取消任务。"""
+    task = task_manager.get_task(task_id)
+    if not task:
+        raise HTTPException(status_code=404, detail="任务不存在")
+    _ensure_task_access(task, str(current_user.id))
+    try:
+        return task_manager.retry_task(task_id)
+    except RuntimeError as e:
+        raise HTTPException(status_code=400, detail=str(e))
 
 
 @router.post("/{testset_id}/generate")
@@ -1118,6 +1238,7 @@ async def get_advanced_config(
 @router.get("/{testset_id}/export")
 async def export_testset(
     testset_id: UUID,
+    evaluation_id: Optional[UUID] = Query(None, description="指定评估ID，导出该次评估结果"),
     current_user: User = Depends(get_current_active_user),
     db: Session = Depends(get_db)
 ):
@@ -1152,20 +1273,47 @@ async def export_testset(
         docs = db.query(Document).filter(Document.id.in_(list(doc_ids_in_meta))).all()
         document_name_map = {str(d.id): (d.filename or "") for d in docs}
     
-    latest_eval = db.query(EvaluationModel).filter(
-        EvaluationModel.testset_id == str(testset_id),
-        EvaluationModel.status == 'completed'
-    ).order_by(EvaluationModel.timestamp.desc()).first()
+    if evaluation_id:
+        latest_eval = db.query(EvaluationModel).filter(
+            EvaluationModel.id == str(evaluation_id),
+            EvaluationModel.testset_id == str(testset_id),
+            EvaluationModel.user_id == current_user.id,
+            EvaluationModel.status == 'completed'
+        ).first()
+        if not latest_eval:
+            raise HTTPException(status_code=404, detail="指定评估不存在或未完成")
+    else:
+        latest_eval = db.query(EvaluationModel).filter(
+            EvaluationModel.testset_id == str(testset_id),
+            EvaluationModel.status == 'completed'
+        ).order_by(EvaluationModel.timestamp.desc()).first()
 
     base_headers = ["问题ID", "问题", "问题类型", "参考答案", "模型答案", "切片内容", "来源文档", "角色画像"]
-    metrics_headers = []
-    reason_headers = []
+    metric_keys: List[str] = []
+    metric_headers: List[str] = []
+    reason_headers: List[str] = []
     eval_results_map = {}
+    header_name_map = {
+        "answer_relevance": "答案相关性",
+        "context_relevance": "检索相关性",
+        "context_precision": "检索精确性",
+        "faithfulness": "忠实度",
+        "answer_correctness": "答案正确性",
+        "hallucination": "幻觉风险",
+        "toxicity": "有害内容风险",
+        "bias": "偏见风险",
+        "precision": "精确率",
+        "recall": "召回率",
+        "overall_score": "综合评分",
+        "answer_relevance_reason": "答案相关性评分依据",
+        "context_relevance_reason": "检索相关性评分依据",
+        "context_precision_reason": "检索精确性评分依据"
+    }
     
     if latest_eval:
-        metrics_headers = latest_eval.evaluation_metrics or []
-        for m in metrics_headers:
-            reason_headers.append(f"{m}_reason")
+        metric_keys = latest_eval.evaluation_metrics or []
+        metric_headers = [header_name_map.get(m, m) for m in metric_keys]
+        reason_headers = [header_name_map.get(f"{m}_reason", f"{header_name_map.get(m, m)}评分依据") for m in metric_keys]
         
         results = db.query(EvaluationResultModel).filter(
             EvaluationResultModel.evaluation_id == latest_eval.id
@@ -1175,7 +1323,7 @@ async def export_testset(
 
     output = io.StringIO()
     writer = csv.writer(output)
-    writer.writerow(base_headers + metrics_headers + reason_headers)
+    writer.writerow(base_headers + metric_headers + reason_headers)
     for q in questions:
         normalized_type, normalized_major, normalized_minor = _normalize_question_category(
             q.question_type, q.category_major, q.category_minor
@@ -1226,27 +1374,29 @@ async def export_testset(
         elif persona_description:
             persona_profile = persona_description
 
+        eval_row = eval_results_map.get(str(q.id)) if latest_eval else None
+        model_answer = (eval_row.generated_answer or "") if eval_row else (q.answer or "")
+
         row_data = [
             q.id,
             q.question or "",
             unified_question_type,
             q.expected_answer or "",
-            q.answer or "",
+            model_answer,
             q.context or "",
             source_document,
             persona_profile
         ]
 
         if latest_eval:
-            r = eval_results_map.get(str(q.id))
-            metrics_dict = r.metrics if r and isinstance(r.metrics, dict) else {}
-            reasons_dict = r.reasons if r and isinstance(r.reasons, dict) else {}
+            metrics_dict = eval_row.metrics if eval_row and isinstance(eval_row.metrics, dict) else {}
+            reasons_dict = eval_row.reasons if eval_row and isinstance(eval_row.reasons, dict) else {}
             
-            for m in metrics_headers:
+            for m in metric_keys:
                 val = metrics_dict.get(m, "")
                 row_data.append(str(val) if val is not None else "")
                 
-            for m in metrics_headers:
+            for m in metric_keys:
                 reason_val = reasons_dict.get(m, "")
                 row_data.append(str(reason_val) if reason_val is not None else "")
 
@@ -1312,6 +1462,7 @@ def _run_execution_task(
     """后台任务：执行测试集并获取回答"""
     db = SessionLocal()
     try:
+        task_manager.ensure_not_cancelled(task_id)
         task_manager.update_status(task_id, "running")
         task_manager.append_log(task_id, f"正在初始化API客户端 (手机号: {mobile}, BOT_ID: {bot_id})...")
         started_at = datetime.now()
@@ -1356,7 +1507,14 @@ def _run_execution_task(
         
         for idx, q in enumerate(questions_to_execute):
             try:
-                task_manager.update_progress(task_id, idx / total, f"正在处理第 {idx + 1}/{total} 题...")
+                task_manager.ensure_not_cancelled(task_id)
+                task_manager.update_progress(
+                    task_id,
+                    idx / total,
+                    f"正在处理第 {idx + 1}/{total} 题...",
+                    current_step=idx + 1,
+                    total_steps=total,
+                )
                 task_manager.append_log(task_id, f"提问 [{idx + 1}/{total}]: {q.question}")
                 
                 answer, status, refs = client.chat_with_answer_with_status(
@@ -1384,13 +1542,14 @@ def _run_execution_task(
                 }
                     
                 db.commit()
+                task_manager.ensure_not_cancelled(task_id)
                 task_manager.append_log(task_id, f"收到回答 [{idx + 1}/{total}] (状态: {status})")
             except Exception as e:
                 task_manager.append_log(task_id, f"处理第 {idx + 1} 题时发生异常: {str(e)}")
                 # 记录异常但继续处理下一题
                 db.rollback()
         
-        task_manager.update_progress(task_id, 1.0, "执行完成")
+        task_manager.update_progress(task_id, 1.0, "执行完成", current_step=total, total_steps=total)
         execution_eval.status = "completed"
         execution_eval.total_questions = total
         execution_eval.evaluated_questions = total
@@ -1400,10 +1559,25 @@ def _run_execution_task(
         task_manager.finish_task(
             task_id,
             result={"processed_count": total, "execution_evaluation_id": execution_evaluation_id},
-            message=f"测试集执行完成，共处理 {total} 个问题"
+            message=f"测试集执行完成，共处理 {total} 个问题",
+            current_step=total,
+            total_steps=total,
         )
         task_manager.append_log(task_id, "所有问题处理完毕")
         
+    except TaskCancelledError:
+        try:
+            execution_eval = db.query(EvaluationModel).filter(
+                EvaluationModel.id == execution_evaluation_id
+            ).first()
+            if execution_eval:
+                execution_eval.status = "failed"
+                execution_eval.error_message = "任务已取消"
+                db.commit()
+        except Exception:
+            db.rollback()
+        task_manager.mark_cancelled(task_id, "测试集执行已取消")
+        task_manager.append_log(task_id, "任务已取消，停止执行")
     except Exception as e:
         try:
             execution_eval = db.query(EvaluationModel).filter(
@@ -1473,31 +1647,18 @@ async def start_execution(
     db.commit()
     db.refresh(execution_eval)
         
-    task_id = task_manager.create_task(
+    task_id = task_manager.submit_task(
         task_type="execute_testset",
         params={
             "testset_id": str(execution_testset.id),
             "source_testset_id": str(testset.id),
             "execution_evaluation_id": str(execution_eval.id),
+            "user_id": str(current_user.id),
             "mobile": request.mobile,
+            "verify_code": request.verify_code,
             "bot_id": request.bot_id
         }
     )
-    
-    thread = threading.Thread(
-        target=_run_execution_task,
-        args=(
-            task_id,
-            str(execution_eval.id),
-            str(execution_testset.id),
-            str(current_user.id),
-            request.mobile,
-            request.verify_code,
-            request.bot_id
-        ),
-        daemon=True
-    )
-    thread.start()
     
     return {
         "task_id": task_id,

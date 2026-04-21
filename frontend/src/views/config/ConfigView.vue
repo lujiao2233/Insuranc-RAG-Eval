@@ -1,11 +1,11 @@
 <template>
-  <div class="config-view">
-    <el-tabs v-model="activeTab">
+  <div class="page config-page">
+    <el-tabs v-model="activeTab" class="section">
       <el-tab-pane label="API配置" name="api">
-        <el-card>
+        <el-card shadow="never">
           <template #header>
             <div class="card-header">
-              <span>API密钥配置</span>
+              <span class="page-title">API密钥配置</span>
               <el-button type="primary" @click="testConnection">
                 <el-icon><Connection /></el-icon>
                 测试连接
@@ -52,18 +52,64 @@
       </el-tab-pane>
       
       <el-tab-pane label="模型配置" name="model">
-        <el-card>
+        <el-card shadow="never">
           <template #header>
-            <span>模型参数配置</span>
+            <span class="page-title">模型参数配置</span>
           </template>
           
           <el-form label-width="150px">
             <el-form-item label="生成模型">
-              <el-input v-model="modelConfig.generation_model" />
+              <el-select
+                v-model="modelConfig.generation_model"
+                filterable
+                allow-create
+                default-first-option
+                placeholder="请选择或输入生成模型"
+                style="width: 100%;"
+              >
+                <el-option
+                  v-for="model in modelOptions"
+                  :key="model"
+                  :label="model"
+                  :value="model"
+                />
+              </el-select>
             </el-form-item>
             
             <el-form-item label="评估模型">
-              <el-input v-model="modelConfig.evaluation_model" />
+              <el-select
+                v-model="modelConfig.evaluation_model"
+                filterable
+                allow-create
+                default-first-option
+                placeholder="请选择或输入评估模型"
+                style="width: 100%;"
+              >
+                <el-option
+                  v-for="model in modelOptions"
+                  :key="model"
+                  :label="model"
+                  :value="model"
+                />
+              </el-select>
+            </el-form-item>
+
+            <el-form-item label="分析模型">
+              <el-select
+                v-model="modelConfig.analysis_model"
+                filterable
+                allow-create
+                default-first-option
+                placeholder="请选择或输入分析模型"
+                style="width: 100%;"
+              >
+                <el-option
+                  v-for="model in modelOptions"
+                  :key="model"
+                  :label="model"
+                  :value="model"
+                />
+              </el-select>
             </el-form-item>
             
             <el-form-item label="温度参数">
@@ -82,19 +128,56 @@
       </el-tab-pane>
       
       <el-tab-pane label="评估配置" name="evaluation">
-        <el-card>
+        <el-card shadow="never">
           <template #header>
-            <span>评估参数配置</span>
+            <span class="page-title">评估参数配置</span>
           </template>
           
           <el-form label-width="150px">
-            <el-form-item label="评估指标">
-              <el-checkbox-group v-model="evaluationConfig.metrics">
-                <el-checkbox value="answer_relevance">答案相关性</el-checkbox>
-                <el-checkbox value="context_relevance">上下文相关性</el-checkbox>
-                <el-checkbox value="faithfulness">忠实度</el-checkbox>
-              </el-checkbox-group>
-            </el-form-item>
+            <el-row :gutter="20">
+              <el-col :span="12">
+                <el-form-item label="RAGAS评估指标" class="vertical-form-item">
+                  <el-checkbox-group v-model="evaluationConfig.ragas_metrics" class="metric-categories">
+                    <div class="metric-category">
+                      <div class="category-title">检索类</div>
+                      <el-checkbox value="context_relevance" disabled>检索相关性</el-checkbox>
+                      <el-checkbox value="context_precision" disabled>检索精确性</el-checkbox>
+                    </div>
+                    <div class="metric-category">
+                      <div class="category-title">生成类</div>
+                      <el-checkbox value="answer_relevance">答案相关性</el-checkbox>
+                      <el-checkbox value="answer_correctness">答案正确性</el-checkbox>
+                      <el-checkbox value="answer_similarity">答案相似度</el-checkbox>
+                      <el-checkbox value="faithfulness" disabled>忠实度</el-checkbox>
+                    </div>
+                  </el-checkbox-group>
+                </el-form-item>
+              </el-col>
+
+              <el-col :span="12">
+                <el-form-item label="DeepEval评估指标" class="vertical-form-item">
+                  <el-checkbox-group v-model="evaluationConfig.deepeval_metrics" class="metric-categories">
+                    <div class="metric-category">
+                      <div class="category-title">检索类</div>
+                      <el-checkbox value="context_relevance" disabled>检索相关性</el-checkbox>
+                      <el-checkbox value="context_precision" disabled>检索精确性</el-checkbox>
+                    </div>
+                    <div class="metric-category">
+                      <div class="category-title">生成类</div>
+                      <el-checkbox value="answer_relevance">答案相关性</el-checkbox>
+                      <el-checkbox value="answer_correctness">答案正确性</el-checkbox>
+                      <el-checkbox value="faithfulness" disabled>忠实度</el-checkbox>
+                      <el-checkbox value="hallucination" disabled>幻觉检测</el-checkbox>
+                    </div>
+                    <div class="metric-category">
+                      <div class="category-title">安全类</div>
+                      <el-checkbox value="toxicity">有害言论检测</el-checkbox>
+                      <el-checkbox value="bias">偏见检测</el-checkbox>
+                    </div>
+                  </el-checkbox-group>
+                </el-form-item>
+              </el-col>
+            </el-row>
             
             <el-form-item label="批处理大小">
               <el-input-number v-model="evaluationConfig.batch_size" :min="1" :max="20" />
@@ -112,9 +195,9 @@
       </el-tab-pane>
       
       <el-tab-pane label="阈值配置" name="thresholds">
-        <el-card>
+        <el-card shadow="never">
           <template #header>
-            <span>性能阈值配置</span>
+            <span class="page-title">性能阈值配置</span>
           </template>
           
           <el-form label-width="150px">
@@ -134,10 +217,10 @@
       </el-tab-pane>
       
       <el-tab-pane label="系统配置" name="system">
-        <el-card>
+        <el-card shadow="never">
           <template #header>
             <div class="card-header">
-              <span>系统参数</span>
+              <span class="page-title">系统参数</span>
               <div>
                 <el-button @click="exportConfig">
                   <el-icon><Download /></el-icon>
@@ -202,12 +285,24 @@ const apiConfig = reactive({
 const modelConfig = reactive({
   generation_model: 'qwen3-max',
   evaluation_model: 'qwen3-max',
+  analysis_model: 'qwen3-max',
   temperature: 0.1,
   max_tokens: 2000
 })
 
+const modelOptions = [
+  'qwen3.6-flash',
+  'qwen3.6-plus',
+  'qwen3.5-plus',
+  'qwen3.5-flash',
+  'qwen3-max',
+  'deepseek-v3.2',
+  'glm-5'
+]
+
 const evaluationConfig = reactive({
-  metrics: ['answer_relevance', 'faithfulness'],
+  ragas_metrics: ['answer_relevance', 'context_relevance', 'context_precision', 'faithfulness', 'answer_correctness'],
+  deepeval_metrics: ['answer_relevance', 'context_relevance', 'context_precision', 'faithfulness', 'answer_correctness', 'toxicity', 'bias'],
   batch_size: 5,
   temperature: 0.1
 })
@@ -243,14 +338,19 @@ const fetchConfigs = async () => {
     if (qwenRes.configs) {
       modelConfig.generation_model = qwenRes.configs['qwen.generation_model'] || modelConfig.generation_model
       modelConfig.evaluation_model = qwenRes.configs['qwen.evaluation_model'] || modelConfig.evaluation_model
+      modelConfig.analysis_model = qwenRes.configs['qwen.analysis_model'] || modelConfig.analysis_model
       modelConfig.temperature = parseFloat(qwenRes.configs['qwen.temperature']) || modelConfig.temperature
       modelConfig.max_tokens = parseInt(qwenRes.configs['qwen.max_tokens']) || modelConfig.max_tokens
     }
     
     if (evalRes.configs) {
-      const metrics = evalRes.configs['evaluation.ragas_metrics']
-      if (metrics && Array.isArray(metrics)) {
-        evaluationConfig.metrics = metrics
+      const ragasMetrics = evalRes.configs['evaluation.ragas_metrics']
+      if (ragasMetrics && Array.isArray(ragasMetrics)) {
+        evaluationConfig.ragas_metrics = ragasMetrics
+      }
+      const deepevalMetrics = evalRes.configs['evaluation.deepeval_metrics']
+      if (deepevalMetrics && Array.isArray(deepevalMetrics)) {
+        evaluationConfig.deepeval_metrics = deepevalMetrics
       }
       evaluationConfig.batch_size = parseInt(evalRes.configs['evaluation.batch_size']) || evaluationConfig.batch_size
       evaluationConfig.temperature = parseFloat(evalRes.configs['evaluation.temperature']) || evaluationConfig.temperature
@@ -295,6 +395,7 @@ const saveModelConfig = async () => {
     await configApi.batchUpdateConfigs({
       'qwen.generation_model': modelConfig.generation_model,
       'qwen.evaluation_model': modelConfig.evaluation_model,
+      'qwen.analysis_model': modelConfig.analysis_model,
       'qwen.temperature': modelConfig.temperature.toString(),
       'qwen.max_tokens': modelConfig.max_tokens.toString()
     })
@@ -308,7 +409,8 @@ const saveModelConfig = async () => {
 const saveEvaluationConfig = async () => {
   try {
     await configApi.batchUpdateConfigs({
-      'evaluation.ragas_metrics': JSON.stringify(evaluationConfig.metrics),
+      'evaluation.ragas_metrics': evaluationConfig.ragas_metrics,
+      'evaluation.deepeval_metrics': evaluationConfig.deepeval_metrics,
       'evaluation.batch_size': evaluationConfig.batch_size.toString(),
       'evaluation.temperature': evaluationConfig.temperature.toString()
     })
@@ -394,7 +496,57 @@ onMounted(() => {
 </script>
 
 <style lang="scss" scoped>
-.config-view {
+.metric-categories {
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+  width: 100%;
+}
+
+.metric-category {
+  display: flex;
+  flex-direction: column;
+  background-color: var(--bg-2, #f8f9fa);
+  padding: 12px 16px;
+  border-radius: 4px;
+}
+
+.category-title {
+  font-size: 13px;
+  color: var(--text-2, #606266);
+  font-weight: 600;
+  margin-bottom: 8px;
+}
+
+.metric-category .el-checkbox {
+  margin-right: 24px;
+  margin-bottom: 4px;
+}
+
+.vertical-form-item {
+  flex-direction: column;
+  align-items: flex-start;
+}
+
+.vertical-form-item :deep(.el-form-item__label) {
+  width: 100% !important;
+  text-align: left;
+  justify-content: flex-start;
+  margin-bottom: 8px;
+}
+
+.vertical-form-item :deep(.el-form-item__content) {
+  margin-left: 0 !important;
+  width: 100%;
+}
+
+.config-page {
+  .page-title {
+    font-size: var(--font-16, 16px);
+    font-weight: var(--fw-600, 600);
+    color: var(--text-1, #303133);
+  }
+
   .card-header {
     display: flex;
     justify-content: space-between;
@@ -404,8 +556,18 @@ onMounted(() => {
   .api-status {
     h4 {
       margin-bottom: 16px;
-      color: #303133;
+      color: var(--text-1, #303133);
+      font-weight: var(--fw-600, 600);
     }
   }
+}
+
+:deep(.el-card__header) {
+  padding: 16px;
+  border-bottom: 1px solid var(--border-1, #ebeef5);
+}
+
+:deep(.el-card) {
+  border-radius: var(--radius-8, 8px);
 }
 </style>

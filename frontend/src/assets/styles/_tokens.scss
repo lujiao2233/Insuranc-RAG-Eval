@@ -1,0 +1,82 @@
+/* src/assets/styles/_tokens.scss */
+:root {
+  /* 基础色 */
+  --bg-app: #f5f7fa;
+  --bg-card: #ffffff;
+
+  --text-1: rgba(0, 0, 0, 0.88);
+  --text-2: rgba(0, 0, 0, 0.65);
+  --text-3: rgba(0, 0, 0, 0.45);
+
+  --border-1: #e5eaf0;
+
+  /* 品牌色（偏现代 SaaS 蓝） */
+  --brand-1: #2563eb; /* primary */
+  --brand-2: #1d4ed8; /* primary hover/active */
+
+  --success-1: #16a34a;
+  --warning-1: #f59e0b;
+  --danger-1: #ef4444;
+
+  /* 圆角/阴影 */
+  --radius-8: 8px;
+  --shadow-1: 0 1px 2px rgba(16, 24, 40, 0.06), 0 2px 6px rgba(16, 24, 40, 0.06);
+
+  /* 间距体系 */
+  --space-8: 8px;
+  --space-12: 12px;
+  --space-16: 16px;
+  --space-24: 24px;
+  --space-32: 32px;
+
+  /* 字体层级 */
+  --font-12: 12px;
+  --font-14: 14px;
+  --font-16: 16px;
+  --font-20: 20px;
+
+  --line-20: 20px;
+  --line-22: 22px;
+  --line-24: 24px;
+  --line-28: 28px;
+
+  --fw-400: 400;
+  --fw-600: 600;
+}
+
+/* 全局背景与基础文本 */
+html,
+body {
+  height: 100%;
+}
+body {
+  margin: 0;
+  color: var(--text-1);
+  background: var(--bg-app);
+}
+
+/* 通用卡片（你后面可以在页面里逐步替换为这个 class） */
+.saas-card {
+  background: var(--bg-card);
+  border: 1px solid var(--border-1);
+  border-radius: var(--radius-8);
+  box-shadow: var(--shadow-1);
+}
+
+/* 常用标题层级（先给全局 class，后续页面慢慢替换） */
+.h-page {
+  font-size: var(--font-20);
+  line-height: var(--line-28);
+  font-weight: var(--fw-600);
+}
+.h-section {
+  font-size: var(--font-16);
+  line-height: var(--line-24);
+  font-weight: var(--fw-600);
+}
+.text-muted {
+  color: var(--text-2);
+}
+.text-weak {
+  color: var(--text-3);
+}

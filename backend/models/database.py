@@ -1,7 +1,7 @@
 """数据库模型
 定义MySQL数据库的表结构
 """
-from sqlalchemy import Column, Integer, String, Text, DateTime, ForeignKey, Boolean, JSON, BigInteger, Index
+from sqlalchemy import Column, Integer, String, Text, DateTime, ForeignKey, Boolean, JSON, BigInteger, Index, Float
 from sqlalchemy.dialects.mysql import CHAR
 from sqlalchemy.orm import declarative_base, relationship
 from sqlalchemy.sql import func
@@ -176,6 +176,29 @@ class Configuration(Base):
     updated_at = Column(DateTime, onupdate=func.now())
 
     user = relationship("User", back_populates="configurations")
+
+class BackgroundTask(Base):
+    __tablename__ = "background_tasks"
+
+    id = Column(CHAR(36), primary_key=True, default=generate_uuid)
+    task_type = Column(String(50), nullable=False, index=True)
+    status = Column(String(20), default="pending", nullable=False, index=True)
+    progress = Column(Float, default=0.0, nullable=False)
+    message = Column(Text)
+    logs = Column(JSON)
+    result = Column(JSON)
+    error = Column(Text)
+    params = Column(JSON)
+    current_step = Column(Integer)
+    total_steps = Column(Integer)
+    worker_id = Column(String(100))
+    attempt_count = Column(Integer, default=0, nullable=False)
+    max_attempts = Column(Integer, default=1, nullable=False)
+    claimed_at = Column(DateTime)
+    started_at = Column(DateTime)
+    finished_at = Column(DateTime)
+    created_at = Column(DateTime, server_default=func.now())
+    updated_at = Column(DateTime, server_default=func.now(), onupdate=func.now())
 
 class ApiUsageLog(Base):
     """记录LLM API调用的Token消耗流水"""

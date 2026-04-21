@@ -127,7 +127,7 @@ class DocumentService:
         from models.database import DocumentChunk
         from services.llm_service import get_llm_service
         from services.question_generator import get_question_generator
-        from services.task_manager import task_manager
+        from services.task_manager import task_manager, TaskCancelledError
         
         own_db = False
         if db is None:
@@ -136,7 +136,9 @@ class DocumentService:
             
         try:
             if task_id:
-                task_manager.update_progress(task_id, 0.25, "开始文本提取...")
+                task_manager.ensure_not_cancelled(task_id)
+            if task_id:
+                task_manager.update_progress(task_id, 0.25, "开始文本提取...", current_step=1, total_steps=5)
             # 1. 文本提取
             processed_doc = self.document_processor.process_file(document.file_path)
             if not processed_doc or not processed_doc.get("text_content"):
@@ -146,11 +148,16 @@ class DocumentService:
             processed_page_count = self._normalize_page_count(processed_doc.get("page_count"))
             
             # 获取LLM服务
-            llm_service = get_llm_service(user_id=document.user_id, db=db)
+            llm_service = get_llm_service(
+                user_id=document.user_id,
+                db=db,
+                model_config_key="qwen.analysis_model",
+            )
             
             # 2. 智能提纲与实体提取
             if task_id:
-                task_manager.update_progress(task_id, 0.35, "正在调用LLM提取提纲与元数据...")
+                task_manager.ensure_not_cancelled(task_id)
+                task_manager.update_progress(task_id, 0.35, "正在调用LLM提取提纲与元数据...", current_step=2, total_steps=5)
             analysis_result = await self.metadata_extractor.extract(text_content, llm=llm_service)
             if not analysis_result or not analysis_result.get("outline"):
                 return {"success": False, "message": "智能提纲提取失败"}
@@ -180,7 +187,8 @@ class DocumentService:
             
             # 3. 语义切片与向量化
             if task_id:
-                task_manager.update_progress(task_id, 0.55, "正在进行语义切片...")
+                task_manager.ensure_not_cancelled(task_id)
+                task_manager.update_progress(task_id, 0.55, "正在进行语义切片...", current_step=3, total_steps=5)
             self.chunking_service.llm = llm_service
             chunks = await self.chunking_service.chunk_document(
                 text_content, 
@@ -197,6 +205,8 @@ class DocumentService:
                     batch_size = 10
                     total_batches = (len(chunk_texts) + batch_size - 1) // batch_size
                     for i in range(0, len(chunk_texts), batch_size):
+                        if task_id:
+                            task_manager.ensure_not_cancelled(task_id)
                         batch = chunk_texts[i:i+batch_size]
                         if task_id:
                             current_batch = i // batch_size + 1
@@ -204,7 +214,9 @@ class DocumentService:
                             task_manager.update_progress(
                                 task_id,
                                 progress,
-                                f"正在向量化切片（第 {current_batch}/{total_batches} 批）..."
+                                f"正在向量化切片（第 {current_batch}/{total_batches} 批）...",
+                                current_step=4,
+                                total_steps=5,
                             )
                         vectors = await generator.get_embeddings(batch)
                         all_vectors.extend(vectors)
@@ -213,7 +225,8 @@ class DocumentService:
             
             # 清除旧切片
             if task_id:
-                task_manager.update_progress(task_id, 0.9, "正在写入切片与索引...")
+                task_manager.ensure_not_cancelled(task_id)
+                task_manager.update_progress(task_id, 0.9, "正在写入切片与索引...", current_step=5, total_steps=5)
             db.query(DocumentChunk).filter(DocumentChunk.document_id == document.id).delete()
             
             # 将切片存入数据库
@@ -236,13 +249,17 @@ class DocumentService:
             document.status = 'active'
             document.analyzed_at = datetime.now()
             if task_id:
-                task_manager.update_progress(task_id, 0.98, "即将完成...")
+                task_manager.update_progress(task_id, 0.98, "即将完成...", current_step=5, total_steps=5)
             
             if own_db:
                 db.commit()
                 
             return {"success": True, "message": "文档分析完成", "chunks_count": len(chunks)}
             
+        except TaskCancelledError:
+            if own_db:
+                db.rollback()
+            raise
         except Exception as e:
             if own_db:
                 db.rollback()
@@ -257,23 +274,29 @@ class DocumentService:
         from services.task_manager import task_manager
         from config.database import SessionLocal
         from models.database import Document as DocumentModel
+        from services.task_manager import TaskCancelledError
         
         db = SessionLocal()
         document = None
         try:
-            task_manager.update_progress(task_id, 0.1, "正在启动文档分析...")
+            task_manager.update_progress(task_id, 0.1, "正在启动文档分析...", current_step=0, total_steps=5)
             document = db.query(DocumentModel).filter(DocumentModel.id == document_id).first()
             if not document:
                 task_manager.fail_task(task_id, "文档不存在")
                 return
 
             # 直接调用核心分析逻辑
-            task_manager.update_progress(task_id, 0.2, "正在提取文本并进行语义分析...")
+            task_manager.update_progress(task_id, 0.2, "正在提取文本并进行语义分析...", current_step=1, total_steps=5)
             result = await self.analyze_document(document, db=db, task_id=task_id)
             
             if result["success"]:
                 db.commit() # 关键：提交 analyze_document 中的更改
-                task_manager.finish_task(task_id, message=f"分析完成，生成了 {result.get('chunks_count', 0)} 个切片")
+                task_manager.finish_task(
+                    task_id,
+                    message=f"分析完成，生成了 {result.get('chunks_count', 0)} 个切片",
+                    current_step=5,
+                    total_steps=5,
+                )
             else:
                 # 失败时必须落库失败状态，避免前端一直识别为 processing 导致无限轮询
                 document.status = 'failed'
@@ -281,6 +304,19 @@ class DocumentService:
                 db.commit()
                 task_manager.fail_task(task_id, result["message"])
 
+        except TaskCancelledError:
+            db.rollback()
+            try:
+                if document is None:
+                    document = db.query(DocumentModel).filter(DocumentModel.id == document_id).first()
+                if document:
+                    document.status = 'active'
+                    document.is_analyzed = False
+                    db.commit()
+            except Exception as status_err:
+                db.rollback()
+                logger.error(f"写入文档取消状态时出错: {status_err}")
+            task_manager.mark_cancelled(task_id, "文档分析已取消")
         except Exception as e:
             db.rollback()
             logger.error(f"分析任务失败: {str(e)}")

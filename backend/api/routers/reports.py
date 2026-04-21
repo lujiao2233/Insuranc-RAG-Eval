@@ -44,6 +44,7 @@ async def list_reports(
             continue
         reports.append({
             "evaluation_id": e.id,
+            "testset_id": e.testset_id,
             "testset_name": testset.name if testset else "未知测试集",
             "evaluation_method": e.evaluation_method,
             "status": e.status,

@@ -53,9 +53,11 @@ export const useEvaluationStore = defineStore('evaluation', () => {
       const response = await evaluationApi.createEvaluation(data)
       
       taskStatus.value = {
-        task_id: response.task_id,
+        id: response.task_id,
+        type: 'evaluation',
         status: 'pending',
         progress: 0,
+        message: response.message || '',
         logs: []
       }
       

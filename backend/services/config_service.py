@@ -28,6 +28,10 @@ DEFAULT_CONFIGS = {
         "value": "qwen3.5-plus",
         "description": "评估使用的模型"
     },
+    "qwen.analysis_model": {
+        "value": "qwen3.5-plus",
+        "description": "文档解析与分析使用的模型"
+    },
     "qwen.temperature": {
         "value": "0.1",
         "description": "模型温度参数"
@@ -65,8 +69,12 @@ DEFAULT_CONFIGS = {
         "description": "相似度阈值"
     },
     "evaluation.ragas_metrics": {
-        "value": '["answer_relevance", "context_relevance", "faithfulness"]',
+        "value": '["answer_relevance", "context_relevance", "context_precision", "faithfulness", "answer_correctness"]',
         "description": "RAGAS评估指标"
+    },
+    "evaluation.deepeval_metrics": {
+        "value": '["answer_relevance", "context_relevance", "context_precision", "faithfulness", "answer_correctness", "toxicity", "bias"]',
+        "description": "DeepEval评估指标"
     },
     "evaluation.batch_size": {
         "value": "5",

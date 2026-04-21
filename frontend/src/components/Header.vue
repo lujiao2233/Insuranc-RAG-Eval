@@ -93,19 +93,31 @@ export default {
   justify-content: space-between;
   align-items: center;
   height: 100%;
+  color: var(--text-1, #303133);
+}
+
+h1 {
+  font-size: var(--font-16, 16px);
+  font-weight: var(--fw-600, 600);
+  margin: 0;
 }
 
 .user-actions {
   display: flex;
   align-items: center;
-  gap: 10px;
+  gap: 16px;
 }
 
 .el-dropdown-link {
   cursor: pointer;
-  color: #fff;
+  color: var(--text-2, #606266);
   display: flex;
   align-items: center;
   gap: 5px;
+  font-size: var(--font-14, 14px);
+  
+  &:hover {
+    color: var(--brand-1, #2563eb);
+  }
 }
 </style>
