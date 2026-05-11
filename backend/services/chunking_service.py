@@ -193,9 +193,12 @@ class TableDataStrategy(GeneralChunkingStrategy):
     """表格切片策略：将表格记录转换为结构化 JSON，每行作为一个独立切片"""
     
     async def chunk(self, text: str, chunk_size: int, section_meta: Dict[str, Any]) -> List[Dict[str, Any]]:
+        if re.search(r'\[TABLE_PAGE_\d+\]', text):
+            return self._chunk_camelot_tables(text)
+
         if '[[' in text and ']]' in text:
             return self._chunk_list_to_json(text)
-            
+
         table_markers = [r'\[TABLE \d+\]', r'^表格\d+:', r'\|']
         is_table = any(re.search(m, text, re.MULTILINE) for m in table_markers)
         
@@ -394,16 +397,41 @@ class TableDataStrategy(GeneralChunkingStrategy):
             
         return self._records_to_row_chunks(records)
 
+    def _chunk_camelot_tables(self, text: str) -> List[Dict[str, Any]]:
+        """处理 Camelot 提取的表格文本，按表格拆分后逐表解析"""
+        table_blocks = re.split(r'(?=\[TABLE_PAGE_\d+\])', text)
+        all_chunks = []
+        for block in table_blocks:
+            block = block.strip()
+            if not block:
+                continue
+            if '[[' in block and ']]' in block:
+                sub = self._chunk_list_to_json(block)
+                all_chunks.extend(sub)
+            elif block.strip():
+                all_chunks.append({"text": block.strip()})
+        return all_chunks if all_chunks else [{"text": text}]
+
     def _chunk_list_to_json(self, text: str) -> List[Dict[str, Any]]:
         """将 Excel 列表格式转换为结构化 JSON 记录流，每行一个切片"""
         row_pattern = r'(\[[^\[\]]+?\])'
         rows_str = re.findall(row_pattern, text)
-        if len(rows_str) < 2:
+
+        valid_rows = []
+        for row_str in rows_str:
+            try:
+                parsed = json.loads(row_str.replace("'", '"'))
+                if isinstance(parsed, list):
+                    valid_rows.append(row_str)
+            except (json.JSONDecodeError, ValueError):
+                continue
+
+        if len(valid_rows) < 2:
             return [{"text": text}]
         
         try:
-            h1 = json.loads(rows_str[0].replace("'", '"'))
-            h2 = json.loads(rows_str[1].replace("'", '"')) if len(rows_str) > 1 else []
+            h1 = json.loads(valid_rows[0].replace("'", '"'))
+            h2 = json.loads(valid_rows[1].replace("'", '"')) if len(valid_rows) > 1 else []
             
             first_row_has_numeric = any(isinstance(c, (int, float)) or (isinstance(c, str) and re.search(r'\d+', c)) for c in h1)
             second_row_has_numeric = any(isinstance(c, (int, float)) or (isinstance(c, str) and re.search(r'\d+', c)) for c in h2) if h2 else False
@@ -412,11 +440,13 @@ class TableDataStrategy(GeneralChunkingStrategy):
                 h1, h2 = h2, h1
             elif first_row_has_numeric and second_row_has_numeric:
                 h2 = []
+            elif not first_row_has_numeric and second_row_has_numeric:
+                h2 = []
             
             headers = self._merge_multi_level_headers([h1, h2] if h2 else [h1])
             
             data_start = 2 if h2 and not second_row_has_numeric else 1
-            data_rows = rows_str[data_start:]
+            data_rows = valid_rows[data_start:]
             
             records = []
             for r_str in data_rows:
@@ -470,10 +500,16 @@ class ChunkingService:
             "default": GeneralChunkingStrategy(llm)
         }
         self._sentence_end_pattern = re.compile(r'[。！？!?…\.]+[”"’\'）)\]】]*$')
-        self._short_chunk_merge_threshold = 60
-        self._max_chunk_chars = 500
+        self._short_chunk_merge_threshold = 100
+        self._max_chunk_chars = 600
         self._title_like_pattern = re.compile(
             r'^\s*((第[一二三四五六七八九十百千万0-9]+[章节条款项])|([一二三四五六七八九十]+[、.]))|(\d+[、.)）])'
+        )
+        self._numbered_anchor_pattern = re.compile(
+            r'(?m)(^|\n)\s*((第[一二三四五六七八九十百千万0-9]+[章节条款项][^\n]{0,80})|'
+            r'([一二三四五六七八九十百千万]+[、.][^\n]{0,120})|'
+            r'([（(][一二三四五六七八九十百千万0-9]+[）)][^\n]{0,120})|'
+            r'(\d+[、.)）][^\n]{0,120}))'
         )
         self._table_doc_types = {"费率表", "现金价值表"}
         self._valid_knowledge_types = ["概念定义", "规则约束", "流程操作", "数据数值", "触发条件", "事实陈述", "异常除外"]
@@ -505,6 +541,7 @@ class ChunkingService:
         flat_outline = self._flatten_outline(outline)
         chunks = []
         sequence_number = 0
+        candidate_node_count = 0
         
         nodes_with_pos = []
         search_start = 0
@@ -512,26 +549,46 @@ class ChunkingService:
             title = node.get("anchor_text") or node.get("title", "").strip()
             if not title:
                 continue
-            
-            idx = text.find(title, search_start)
+            candidate_node_count += 1
+
+            idx, matched_text = self._locate_outline_anchor(text, node, search_start)
             if idx != -1:
                 nodes_with_pos.append({"start": idx, "node": node})
-                search_start = idx + len(title)
-            else:
-                alt_title = node.get("title", "").strip()
-                if alt_title and alt_title != title:
-                    idx = text.find(alt_title, search_start)
-                    if idx != -1:
-                        nodes_with_pos.append({"start": idx, "node": node})
-                        search_start = idx + len(alt_title)
+                search_start = idx + len(matched_text)
+
+        if self._should_use_numbered_anchor_fallback(doc_type):
+            numbered_nodes = self._extract_numbered_anchor_nodes(text)
+            if numbered_nodes:
+                nodes_with_pos = self._merge_anchor_nodes(nodes_with_pos, numbered_nodes)
         
         if not nodes_with_pos:
+            return await self._generate_base_chunks(text, doc_metadata, strategy)
+        if candidate_node_count >= 3 and len(nodes_with_pos) <= 1:
+            logger.warning(
+                f"提纲锚点命中率过低，回退基础切片: matched={len(nodes_with_pos)}, candidates={candidate_node_count}"
+            )
             return await self._generate_base_chunks(text, doc_metadata, strategy)
 
         import asyncio
         tasks = []
         segments_info = []
-        
+
+        first_anchor_start = nodes_with_pos[0]["start"]
+        if first_anchor_start > 0:
+            prefix_text = text[:first_anchor_start].strip()
+            if prefix_text:
+                segments_info.append({
+                    "start_pos": 0,
+                    "node": {
+                        "title": "前置内容",
+                        "anchor_text": "",
+                        "breadcrumb_path": "",
+                        "summary": "",
+                        "knowledge_type": ["事实陈述"],
+                    }
+                })
+                tasks.append(strategy.chunk(prefix_text, DEFAULT_CHUNK_SIZE, {"doc_type": doc_type}))
+
         for i in range(len(nodes_with_pos)):
             curr_node = nodes_with_pos[i]
             next_node_start = nodes_with_pos[i + 1]["start"] if i < len(nodes_with_pos) - 1 else len(text)
@@ -583,6 +640,77 @@ class ChunkingService:
         chunks = self._reindex_chunk_dicts(chunks, text)
         await self._batch_infer_knowledge_types(chunks)
         return chunks
+
+    def _locate_outline_anchor(self, text: str, node: Dict[str, Any], search_start: int) -> Tuple[int, str]:
+        anchor_text = str(node.get("anchor_text") or "").strip()
+        title = str(node.get("title") or "").strip()
+        candidates = [value for value in [anchor_text, title] if value]
+
+        for candidate in candidates:
+            idx = text.find(candidate, search_start)
+            if idx != -1:
+                return idx, candidate
+
+        for candidate in candidates:
+            idx = self._fuzzy_find(text, candidate, search_start, threshold=0.72)
+            if idx != -1:
+                return idx, candidate
+
+        return -1, ""
+
+    def _should_use_numbered_anchor_fallback(self, doc_type: str) -> bool:
+        return str(doc_type or "").strip() in {"公文公告", "管理制度", "其他"}
+
+    def _extract_numbered_anchor_nodes(self, text: str) -> List[Dict[str, Any]]:
+        nodes: List[Dict[str, Any]] = []
+        for match in self._numbered_anchor_pattern.finditer(text):
+            anchor_text = str(match.group(2) or "").strip()
+            if not anchor_text or len(anchor_text) < 2:
+                continue
+            start = match.start(2)
+            nodes.append({
+                "start": start,
+                "node": {
+                    "title": anchor_text,
+                    "anchor_text": anchor_text,
+                    "breadcrumb_path": anchor_text[:20],
+                    "summary": "",
+                    "knowledge_type": ["事实陈述"],
+                },
+            })
+        return nodes
+
+    def _merge_anchor_nodes(self, primary_nodes: List[Dict[str, Any]], fallback_nodes: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+        merged = sorted(primary_nodes, key=lambda item: item["start"])
+        for fallback in sorted(fallback_nodes, key=lambda item: item["start"]):
+            start = fallback["start"]
+            if any(abs(start - existing["start"]) <= 12 for existing in merged):
+                continue
+            merged.append(fallback)
+        return sorted(merged, key=lambda item: item["start"])
+
+    def _fuzzy_find(self, text: str, pattern: str, start_pos: int = 0, threshold: float = 0.8) -> int:
+        pattern = pattern.strip()
+        if not pattern:
+            return -1
+
+        exact_idx = text.find(pattern, start_pos)
+        if exact_idx != -1:
+            return exact_idx
+
+        pattern_len = len(pattern)
+        best_idx = -1
+        best_ratio = threshold
+
+        search_range = min(len(text) - start_pos, 10000)
+        for i in range(start_pos, start_pos + search_range - pattern_len):
+            candidate = text[i:i + pattern_len]
+            ratio = SequenceMatcher(None, pattern, candidate).ratio()
+            if ratio > best_ratio:
+                best_ratio = ratio
+                best_idx = i
+
+        return best_idx
 
     def _flatten_outline(self, outline: List[Dict[str, Any]], level: int = 1) -> List[Dict[str, Any]]:
         flat = []
@@ -866,6 +994,10 @@ class ChunkingService:
     def _merge_chunk_dicts_document_level(self, chunks: List[Dict[str, Any]], short_threshold: int) -> List[Dict[str, Any]]:
         if not chunks:
             return chunks
+        # 判断当前文档是否为"允许跨 section 合并短切片"的类型
+        doc_type = str((chunks[0].get("metadata") or {}).get("doc_type") or "").strip()
+        allow_cross_section_for_short = doc_type in {"公文公告", "管理制度", "其他"}
+        min_chunk_size_for_cross_section = 200  # 低于此字数的切片允许跨 section 合并
         merged: List[Dict[str, Any]] = []
         current = dict(chunks[0])
         for i in range(1, len(chunks)):
@@ -874,6 +1006,15 @@ class ChunkingService:
             current_len = len(current_text.replace("\n", "").strip())
             force_merge = self._is_title_like_fragment(current_text)
             need_merge = force_merge or (current_len < short_threshold) or (not self._is_complete_sentence_end(current_text))
+            current_title = str((current.get("metadata") or {}).get("section_title") or "").strip()
+            next_title = str((nxt.get("metadata") or {}).get("section_title") or "").strip()
+            crosses_section_boundary = bool(current_title and next_title and current_title != next_title)
+            if crosses_section_boundary:
+                # 公文公告/管理制度：当前切片不足200字时，允许跨 section 合并以保证问题生成质量
+                if allow_cross_section_for_short and current_len < min_chunk_size_for_cross_section:
+                    need_merge = True
+                else:
+                    need_merge = False
             if need_merge:
                 joined = (current_text + str(nxt.get("content") or "")).strip()
                 current["content"] = joined

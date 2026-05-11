@@ -124,6 +124,10 @@ DEFAULT_CONFIGS = {
         "value": "500",
         "description": "单切片最大字符数"
     },
+    "generation.concurrency": {
+        "value": "3",
+        "description": "测试集生成并发数（同时调用LLM的线程数）"
+    },
     "storage.retention_days": {
         "value": "30",
         "description": "数据保留天数"
@@ -291,6 +295,7 @@ class ConfigService:
         result = {}
         
         result["default"] = self.get_configs_by_prefix(user_id, "default.")
+        result["generation"] = self.get_configs_by_prefix(user_id, "generation.")
         result["files"] = self.get_configs_by_prefix(user_id, "files.")
         result["chunking"] = self.get_configs_by_prefix(user_id, "chunking.")
         result["storage"] = self.get_configs_by_prefix(user_id, "storage.")

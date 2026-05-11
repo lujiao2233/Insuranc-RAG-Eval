@@ -71,7 +71,10 @@ async def list_documents(
         query = query.filter(DocumentModel.is_analyzed == is_analyzed)
     
     if category:
-        query = query.filter(DocumentModel.category == category)
+        query = query.filter(
+            (DocumentModel.category == category) | 
+            (DocumentModel.category.startswith(category + '/'))
+        )
     
     total = query.count()
     documents = query.order_by(DocumentModel.upload_time.desc()).offset(skip).limit(limit).all()
@@ -231,8 +234,8 @@ async def analyze_single_document(
     if not document:
         raise HTTPException(status_code=404, detail="文档不存在")
     
-    if document.is_analyzed:
-        raise HTTPException(status_code=400, detail="文档已完成分析，禁止重复分析")
+    if document.status == 'processing':
+        raise HTTPException(status_code=400, detail="文档正在分析中，请稍后再试")
 
     document.status = 'processing'
     db.commit()
@@ -245,7 +248,10 @@ async def analyze_single_document(
         }
     )
     
-    return {"task_id": task_id, "message": "分析任务已启动"}
+    return {
+        "task_id": task_id,
+        "message": "重新分析任务已启动" if document.is_analyzed else "分析任务已启动"
+    }
 
 @router.get("/{document_id}/chunks", response_model=PaginatedResponse)
 async def list_document_chunks(

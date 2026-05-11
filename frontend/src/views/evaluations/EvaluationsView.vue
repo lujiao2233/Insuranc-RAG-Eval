@@ -18,6 +18,11 @@
           clearable
           style="width: 260px;"
         />
+        <el-select v-model="modeFilter" placeholder="会话模式" clearable style="width: 140px;">
+          <el-option label="全部模式" value="" />
+          <el-option label="仅单轮" value="single_turn" />
+          <el-option label="仅多轮" value="multi_turn" />
+        </el-select>
         <el-select v-model="availabilityFilter" placeholder="评估状态" clearable style="width: 160px;">
           <el-option label="全部" value="" />
           <el-option label="已评估" value="evaluated" />
@@ -34,7 +39,19 @@
             </el-link>
           </template>
         </el-table-column>
-        <el-table-column prop="question_count" label="问题数" width="90" />
+        <el-table-column label="模式" width="100">
+          <template #default="{ row }">
+            <el-tag size="small" :type="row.conversation_mode === 'multi_turn' ? 'warning' : 'info'">
+              {{ row.conversation_mode === 'multi_turn' ? '多轮' : '单轮' }}
+            </el-tag>
+          </template>
+        </el-table-column>
+        <el-table-column label="数量" width="95">
+          <template #default="{ row }">
+            <span v-if="row.conversation_mode === 'multi_turn'">{{ getDisplayCaseCount(row) }}</span>
+            <span v-else>{{ row.question_count }}</span>
+          </template>
+        </el-table-column>
         <el-table-column label="模型答案" width="140">
           <template #default="{ row }">
             {{ row.answered_questions || 0 }} / {{ row.question_count || 0 }}
@@ -122,6 +139,7 @@ const route = useRoute()
 const loading = ref(false)
 const testsets = ref<TestSet[]>([])
 const keyword = ref('')
+const modeFilter = ref('')
 const availabilityFilter = ref('')
 
 const showUploadDialog = ref(false)
@@ -146,14 +164,38 @@ const filteredTestsets = computed(() => {
   if (availabilityFilter.value) {
     result = result.filter(item => item.eval_status === availabilityFilter.value)
   }
+  if (modeFilter.value) {
+    result = result.filter(item => (item.conversation_mode || 'single_turn') === modeFilter.value)
+  }
   return result
 })
+
+const getDisplayCaseCount = (testset: TestSet) => {
+  const metadata = testset.metadata || {}
+  const values = [
+    metadata.conversation_case_count,
+    metadata.case_count,
+    metadata.total_cases,
+    metadata.valid_case_count,
+    metadata?.conversation_quality_report?.valid_case_count
+  ]
+  for (const value of values) {
+    const n = Number(value)
+    if (Number.isFinite(n) && n >= 0) return n
+  }
+  return Number(testset.question_count || 0)
+}
 
 const fetchTestsets = async () => {
   loading.value = true
   try {
     const response = await testsetApi.getTestSets({ limit: 1000, stage: 'evaluation' })
-    testsets.value = response.items.filter(item => isUploadedTestset(item) || item.can_evaluate)
+    testsets.value = response.items.filter(item => {
+      if (isUploadedTestset(item)) return true
+      if (item.can_evaluate) return true
+      if (item.conversation_mode === 'multi_turn') return true
+      return false
+    })
     const focusId = typeof route.query.focus_testset_id === 'string' ? route.query.focus_testset_id : ''
     if (focusId) {
       const focused = testsets.value.find(t => t.id === focusId)

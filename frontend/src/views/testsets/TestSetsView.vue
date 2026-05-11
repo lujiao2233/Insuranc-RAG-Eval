@@ -20,6 +20,16 @@
           clearable
           @input="filterTestsets"
         />
+        <el-select
+          v-model="conversationModeFilter"
+          placeholder="会话模式"
+          style="width: 140px;"
+          @change="filterTestsets"
+        >
+          <el-option label="全部模式" value="" />
+          <el-option label="仅单轮" value="single_turn" />
+          <el-option label="仅多轮" value="multi_turn" />
+        </el-select>
       </div>
       
       <el-table
@@ -35,9 +45,19 @@
             </el-link>
           </template>
         </el-table-column>
-        <el-table-column prop="question_count" label="问题数" width="100">
+        <el-table-column label="模式" width="110">
           <template #default="{ row }">
-            <span>{{ row.question_count }}</span>
+            <el-tag :type="row.conversation_mode === 'multi_turn' ? 'warning' : 'info'">
+              {{ row.conversation_mode === 'multi_turn' ? '多轮' : '单轮' }}
+            </el-tag>
+          </template>
+        </el-table-column>
+        <el-table-column label="数量" width="120">
+          <template #default="{ row }">
+            <span v-if="row.conversation_mode === 'multi_turn'">
+              {{ getConversationCaseCount(row) }} case
+            </span>
+            <span v-else>{{ row.question_count }}</span>
           </template>
         </el-table-column>
         <el-table-column label="状态" width="100">
@@ -127,19 +147,17 @@
           </el-form-item>
           <el-form-item label="按分类选择">
             <el-space wrap style="width: 100%">
-              <el-select
-                v-model="selectedCategory"
-                placeholder="选择文档分类"
+              <el-cascader
+                v-model="selectedCategories"
+                :options="categoryTree"
+                placeholder="选择文档分类（可多选）"
                 clearable
-                style="width: 260px"
-              >
-                <el-option
-                  v-for="category in documentCategories"
-                  :key="category"
-                  :label="`${category}（${categoryDocCountMap[category] || 0}）`"
-                  :value="category"
-                />
-              </el-select>
+                filterable
+                collapse-tags
+                collapse-tags-tooltip
+                style="width: 300px;"
+                :props="{ expandTrigger: 'hover', checkStrictly: true, multiple: true }"
+              />
               <el-button @click="selectDocumentsByCategory(false)">追加该分类</el-button>
               <el-button type="primary" plain @click="selectDocumentsByCategory(true)">仅选该分类</el-button>
               <el-button text @click="clearSelectedDocuments">清空已选文档</el-button>
@@ -148,8 +166,16 @@
           
           <el-divider content-position="left">生成参数</el-divider>
           
-          <!-- 每个文档问题数 -->
-          <el-form-item label="每个文档问题数">
+          <!-- 题目分配方式 -->
+          <el-form-item label="题目分配方式">
+            <el-radio-group v-model="generationForm.distributionMode">
+              <el-radio-button label="per_doc">按文档生成</el-radio-button>
+              <el-radio-button label="total">按总量生成</el-radio-button>
+            </el-radio-group>
+          </el-form-item>
+          
+          <!-- 按文档生成：每文档问题数 -->
+          <el-form-item v-if="generationForm.distributionMode === 'per_doc'" label="每个文档问题数">
             <el-input-number
               v-model="generationForm.questionsPerDoc"
               :min="1"
@@ -157,9 +183,19 @@
               style="width: 100%"
             />
           </el-form-item>
+
+          <!-- 按总量生成：总题目数 -->
+          <el-form-item v-if="generationForm.distributionMode === 'total'" label="总题目数">
+            <el-input-number
+              v-model="generationForm.numTotalQuestions"
+              :min="1"
+              :max="200"
+              style="width: 100%"
+            />
+          </el-form-item>
           
-          <!-- 安全与鲁棒性 -->
-          <el-form-item label="安全与鲁棒性">
+          <!-- 安全与鲁棒性（仅按总量生成时显示） -->
+          <el-form-item v-if="generationForm.distributionMode === 'total'" label="安全与鲁棒性">
             <el-switch
               v-model="generationForm.enableSafetyRobustness"
               active-text="启用"
@@ -399,10 +435,12 @@ import { Plus } from '@element-plus/icons-vue'
 import { testsetApi } from '@/api/testsets'
 import { documentApi } from '@/api/documents'
 import { formatDateTime } from '@/utils/format'
+import { useCategoryHierarchy } from '@/composables/useCategoryHierarchy'
 import type { TestSet, Document } from '@/types'
 import type { FormInstance } from 'element-plus'
 
 const router = useRouter()
+const { categoryTree } = useCategoryHierarchy()
 
 const loading = ref(false)
 const testsets = ref<TestSet[]>([])
@@ -413,6 +451,7 @@ const pageSize = ref(10)
 
 // 筛选相关
 const searchQuery = ref('')
+const conversationModeFilter = ref('')
 
 // 生成配置相关
 const showGenerationDialog = ref(false)
@@ -482,7 +521,9 @@ const getDefaultTestsetName = () => {
 const generationForm = reactive({
   name: getDefaultTestsetName(),
   documentIds: [] as string[],
-  questionsPerDoc: 10,
+  distributionMode: 'per_doc' as 'per_doc' | 'total',
+  questionsPerDoc: 5,
+  numTotalQuestions: 10,
   enableSafetyRobustness: true,
   enablePersona: false,
   personaJson: ''
@@ -492,35 +533,28 @@ const generationForm = reactive({
 const analyzedDocuments = computed(() => 
   documents.value.filter(doc => doc.is_analyzed)
 )
-const selectedCategory = ref('')
+const selectedCategories = ref<string[][]>([])
 const normalizeCategory = (doc: Document) => String(doc.category || '').trim() || '未分类'
-const documentCategories = computed(() => {
-  const set = new Set<string>()
-  for (const doc of analyzedDocuments.value) {
-    set.add(normalizeCategory(doc))
-  }
-  return Array.from(set).sort((a, b) => a.localeCompare(b, 'zh-CN'))
-})
-const categoryDocCountMap = computed<Record<string, number>>(() => {
-  const map: Record<string, number> = {}
-  for (const doc of analyzedDocuments.value) {
-    const category = normalizeCategory(doc)
-    map[category] = (map[category] || 0) + 1
-  }
-  return map
-})
 
 const selectDocumentsByCategory = (replaceSelection: boolean) => {
-  if (!selectedCategory.value) {
+  if (!selectedCategories.value || selectedCategories.value.length === 0) {
     ElMessage.warning('请先选择文档分类')
     return
   }
+  
+  const categoryPaths = selectedCategories.value.map(path => path.join('/'))
+  
   const targetIds = analyzedDocuments.value
-    .filter(doc => normalizeCategory(doc) === selectedCategory.value)
+    .filter(doc => {
+      const docCategory = normalizeCategory(doc)
+      return categoryPaths.some(catPath => 
+        docCategory === catPath || docCategory.startsWith(catPath + '/')
+      )
+    })
     .map(doc => doc.id)
 
   if (targetIds.length === 0) {
-    ElMessage.warning(`分类“${selectedCategory.value}”下没有已分析文档`)
+    ElMessage.warning('所选分类下没有已分析文档')
     return
   }
 
@@ -529,7 +563,7 @@ const selectDocumentsByCategory = (replaceSelection: boolean) => {
   } else {
     generationForm.documentIds = Array.from(new Set([...generationForm.documentIds, ...targetIds]))
   }
-  ElMessage.success(`已选中分类“${selectedCategory.value}”下 ${targetIds.length} 个文档`)
+  ElMessage.success(`已选中 ${categoryPaths.length} 个分类下共 ${targetIds.length} 个文档`)
 }
 
 const clearSelectedDocuments = () => {
@@ -609,9 +643,29 @@ const filterTestsets = () => {
       (ts.description && ts.description.toLowerCase().includes(query))
     )
   }
+
+  if (conversationModeFilter.value) {
+    result = result.filter(ts => (ts.conversation_mode || 'single_turn') === conversationModeFilter.value)
+  }
   
   filteredTestsets.value = result
   currentPage.value = 1
+}
+
+const getConversationCaseCount = (testset: TestSet) => {
+  const metadata = testset.metadata || {}
+  const candidateKeys = [
+    metadata.conversation_case_count,
+    metadata.case_count,
+    metadata.total_cases,
+    metadata.valid_case_count,
+    metadata?.conversation_quality_report?.valid_case_count
+  ]
+  for (const value of candidateKeys) {
+    const count = Number(value)
+    if (Number.isFinite(count) && count >= 0) return count
+  }
+  return Number(testset.question_count || 0)
 }
 
 const handleSizeChange = (size: number) => {
@@ -929,7 +983,9 @@ const startGeneration = async () => {
   generatedQuestions.value = []
   progressInfo.stage = '准备中'
   progressInfo.current = 0
-  progressInfo.total = generationForm.documentIds.length * generationForm.questionsPerDoc
+  progressInfo.total = generationForm.distributionMode === 'per_doc'
+    ? generationForm.documentIds.length * generationForm.questionsPerDoc
+    : generationForm.numTotalQuestions
   progressInfo.logs = []
   
   try {
@@ -937,7 +993,9 @@ const startGeneration = async () => {
     const testset = await testsetApi.createTestSet({
       document_id: generationForm.documentIds[0],
       name,
-      description: `自动生成的测试集，包含${generationForm.questionsPerDoc}个问题/文档`,
+      description: generationForm.distributionMode === 'per_doc'
+        ? `自动生成的测试集，每文档${generationForm.questionsPerDoc}题`
+        : `自动生成的测试集，共${generationForm.numTotalQuestions}题`,
       metadata: {
         document_ids: generationForm.documentIds
       }
@@ -948,11 +1006,15 @@ const startGeneration = async () => {
     progressInfo.logs.push('创建测试集成功，开始生成问题...')
     
     const { task_id } = await testsetApi.generateQuestionsAsync(testset.id, {
-      num_questions: generationForm.questionsPerDoc * generationForm.documentIds.length,
+      num_questions: generationForm.distributionMode === 'per_doc'
+        ? generationForm.questionsPerDoc * generationForm.documentIds.length
+        : generationForm.numTotalQuestions,
       generation_mode: 'advanced',
       enable_safety_robustness: generationForm.enableSafetyRobustness,
       document_ids: generationForm.documentIds,
-      persona_list: personaList
+      persona_list: personaList,
+      distribution_mode: generationForm.distributionMode,
+      questions_per_doc: generationForm.distributionMode === 'per_doc' ? generationForm.questionsPerDoc : undefined,
     })
     
     progressInfo.logs.push(`任务已创建: ${task_id}`)
@@ -979,7 +1041,9 @@ const resetGeneration = () => {
   createdTestsetId.value = null
   generationForm.name = getDefaultTestsetName()
   generationForm.documentIds = []
-  generationForm.questionsPerDoc = 10
+  generationForm.distributionMode = 'per_doc'
+  generationForm.questionsPerDoc = 5
+  generationForm.numTotalQuestions = 10
   generationForm.enableSafetyRobustness = true
   generationForm.enablePersona = false
   generationForm.personaJson = ''

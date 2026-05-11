@@ -93,6 +93,7 @@ class TestSet(Base):
     question_count = Column(Integer, default=0)
     question_types = Column(JSON)  # 存储问题类型分布
     generation_method = Column(String(50), default='qwen_model')  # qwen_model, ragas, csv_import
+    conversation_mode = Column(String(20), default='single_turn', nullable=False, index=True)  # single_turn, multi_turn
     create_time = Column(DateTime, server_default=func.now())
     file_path = Column(String(500))  # CSV文件路径
     testset_metadata = Column(JSON)  # 额外元数据
@@ -102,7 +103,44 @@ class TestSet(Base):
     document = relationship("Document", back_populates="testsets")
     user = relationship("User", back_populates="testsets")
     questions = relationship("Question", back_populates="testset", cascade="all, delete-orphan")
+    conversation_cases = relationship("ConversationTestCase", back_populates="testset", cascade="all, delete-orphan")
+    conversation_executions = relationship("ConversationExecution", back_populates="testset")
     evaluations = relationship("Evaluation", back_populates="testset")
+
+class ConversationTestCase(Base):
+    __tablename__ = "conversation_test_cases"
+
+    id = Column(CHAR(36), primary_key=True, default=generate_uuid)
+    testset_id = Column(CHAR(36), ForeignKey("testsets.id", ondelete="CASCADE"), nullable=False, index=True)
+    case_type = Column(String(30), nullable=False)  # single_chunk_deep / same_doc_chain / cross_doc_assoc
+    anchor_chunk_id = Column(CHAR(36))
+    support_chunk_ids = Column(JSON)
+    evaluation_criteria = Column(Text)
+    turn_count = Column(Integer, default=0, nullable=False)
+    case_metadata = Column(JSON)
+    created_at = Column(DateTime, server_default=func.now())
+    updated_at = Column(DateTime, onupdate=func.now())
+
+    testset = relationship("TestSet", back_populates="conversation_cases")
+    turns = relationship("ConversationTurn", back_populates="case", cascade="all, delete-orphan")
+    turn_results = relationship("ConversationTurnResult", back_populates="case")
+
+class ConversationTurn(Base):
+    __tablename__ = "conversation_turns"
+
+    id = Column(CHAR(36), primary_key=True, default=generate_uuid)
+    case_id = Column(CHAR(36), ForeignKey("conversation_test_cases.id", ondelete="CASCADE"), nullable=False, index=True)
+    turn_index = Column(Integer, nullable=False)  # 轮次序号（1-based）
+    question = Column(Text, nullable=False)
+    expected_answer = Column(Text)
+    dependency_type = Column(String(30), nullable=False, default='none')  # none / contextual / referential / accumulative
+    context_hint = Column(Text)
+    turn_metadata = Column(JSON)
+    created_at = Column(DateTime, server_default=func.now())
+    updated_at = Column(DateTime, onupdate=func.now())
+
+    case = relationship("ConversationTestCase", back_populates="turns")
+    turn_results = relationship("ConversationTurnResult", back_populates="turn")
 
 class Question(Base):
     __tablename__ = "questions"
@@ -130,6 +168,7 @@ class Evaluation(Base):
     user_id = Column(CHAR(36), ForeignKey("users.id", ondelete="CASCADE"), nullable=True)
     testset_id = Column(CHAR(36), ForeignKey("testsets.id", ondelete="SET NULL"), nullable=True)  # 可为空，允许评估非测试集问题
     evaluation_method = Column(String(50), default='ragas_official')  # ragas_official, deepeval
+    evaluation_mode = Column(String(30), default='single_turn', nullable=False, index=True)  # single_turn, deepeval_conversation
     total_questions = Column(Integer, nullable=False)
     evaluated_questions = Column(Integer, nullable=False)
     evaluation_time = Column(Integer)  # 评估耗时（秒）
@@ -144,7 +183,49 @@ class Evaluation(Base):
 
     user = relationship("User", back_populates="evaluations")
     testset = relationship("TestSet", back_populates="evaluations")
+    conversation_executions = relationship("ConversationExecution", back_populates="evaluation")
     results = relationship("EvaluationResult", back_populates="evaluation", cascade="all, delete-orphan")
+
+class ConversationExecution(Base):
+    __tablename__ = "conversation_executions"
+
+    id = Column(CHAR(36), primary_key=True, default=generate_uuid)
+    testset_id = Column(CHAR(36), ForeignKey("testsets.id", ondelete="SET NULL"), nullable=True)
+    evaluation_id = Column(CHAR(36), ForeignKey("evaluations.id", ondelete="SET NULL"), nullable=True)
+    user_id = Column(CHAR(36), ForeignKey("users.id", ondelete="CASCADE"), nullable=True)
+    status = Column(String(20), default='pending', nullable=False)
+    started_at = Column(DateTime)
+    finished_at = Column(DateTime)
+    execution_metadata = Column(JSON)
+    created_at = Column(DateTime, server_default=func.now())
+    updated_at = Column(DateTime, onupdate=func.now())
+
+    testset = relationship("TestSet", back_populates="conversation_executions")
+    evaluation = relationship("Evaluation", back_populates="conversation_executions")
+    user = relationship("User")
+    turn_results = relationship("ConversationTurnResult", back_populates="execution", cascade="all, delete-orphan")
+
+class ConversationTurnResult(Base):
+    __tablename__ = "conversation_turn_results"
+
+    id = Column(CHAR(36), primary_key=True, default=generate_uuid)
+    execution_id = Column(CHAR(36), ForeignKey("conversation_executions.id", ondelete="CASCADE"), nullable=False, index=True)
+    case_id = Column(CHAR(36), ForeignKey("conversation_test_cases.id", ondelete="CASCADE"), nullable=False, index=True)
+    turn_id = Column(CHAR(36), ForeignKey("conversation_turns.id", ondelete="CASCADE"), nullable=False)
+    session_id_before = Column(String(255))
+    session_id_after = Column(String(255))
+    request_payload = Column(JSON)
+    response_payload = Column(JSON)
+    generated_answer = Column(Text)
+    refs = Column(Text)
+    turn_status = Column(String(20), default='pending', nullable=False)
+    execution_time_ms = Column(Integer)
+    created_at = Column(DateTime, server_default=func.now())
+    updated_at = Column(DateTime, onupdate=func.now())
+
+    execution = relationship("ConversationExecution", back_populates="turn_results")
+    case = relationship("ConversationTestCase", back_populates="turn_results")
+    turn = relationship("ConversationTurn", back_populates="turn_results")
 
 class EvaluationResult(Base):
     __tablename__ = "evaluation_results"
@@ -152,6 +233,8 @@ class EvaluationResult(Base):
     id = Column(CHAR(36), primary_key=True, default=generate_uuid)
     evaluation_id = Column(CHAR(36), ForeignKey("evaluations.id", ondelete="CASCADE"), nullable=False)
     question_id = Column(CHAR(36), ForeignKey("questions.id", ondelete="SET NULL"), nullable=True)  # 可为空，允许评估非测试集问题
+    case_id = Column(CHAR(36), nullable=True, index=True)
+    turn_id = Column(CHAR(36), nullable=True, index=True)
     question_text = Column(Text, nullable=False)
     expected_answer = Column(Text)
     generated_answer = Column(Text)
@@ -189,6 +272,7 @@ class BackgroundTask(Base):
     result = Column(JSON)
     error = Column(Text)
     params = Column(JSON)
+    context_info = Column(JSON)
     current_step = Column(Integer)
     total_steps = Column(Integer)
     worker_id = Column(String(100))

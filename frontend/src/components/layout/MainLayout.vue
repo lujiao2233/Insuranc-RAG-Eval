@@ -87,6 +87,9 @@
                         <span class="task-name">{{ task.name }}</span>
                         <span class="task-time">{{ task.time }}</span>
                       </div>
+                      <div v-if="getTaskContextText(task)" class="task-context">
+                        {{ getTaskContextText(task) }}
+                      </div>
                       <el-progress 
                         :percentage="task.progress" 
                         :status="task.status === 'failed' ? 'exception' : (task.status === 'completed' ? 'success' : '')"
@@ -103,6 +106,13 @@
                             :disabled="task.status === 'cancelling'"
                             @click="handleCancelTask(task)"
                           >{{ task.status === 'cancelling' ? '取消中' : '取消' }}</el-button>
+                          <el-button
+                            v-if="task.status === 'failed' || task.status === 'cancelled'"
+                            link
+                            type="success"
+                            size="small"
+                            @click="handleResumeTask(task)"
+                          >继续</el-button>
                           <el-button
                             v-if="task.status === 'failed' || task.status === 'cancelled'"
                             link
@@ -270,6 +280,26 @@ const getStatusText = (status: string) => {
   return map[status] || status
 }
 
+const getTaskContextText = (task: AppTask) => {
+  const context = task.contextInfo
+  if (!context) return ''
+  const currentCase = Number(context.currentCase ?? 0)
+  const totalCases = Number(context.totalCases ?? 0)
+  const currentTurn = Number(context.currentTurn ?? 0)
+  const sessionId = String(context.sessionId || '').trim()
+  const parts: string[] = []
+  if (totalCases > 0) {
+    parts.push(`Case ${Math.max(currentCase, 0)}/${totalCases}`)
+  }
+  if (currentTurn > 0) {
+    parts.push(`Turn ${currentTurn}`)
+  }
+  if (sessionId) {
+    parts.push(`Session: ${sessionId.slice(0, 8)}`)
+  }
+  return parts.join(' | ')
+}
+
 const handleCancelTask = async (task: AppTask) => {
   try {
     const result = await taskApi.cancelTask(task.id)
@@ -300,6 +330,60 @@ const handleRetryTask = async (task: AppTask) => {
     ElMessage.error(error?.response?.data?.detail || '重试任务失败')
   }
 }
+
+const handleResumeTask = async (task: AppTask) => {
+  try {
+    const result = await taskApi.resumeTask(task.id)
+    taskStore.updateTask(task.id, {
+      status: 'pending',
+      progress: Math.round((result.progress || 0) * 100),
+      message: result.message,
+      error: undefined,
+      currentStep: result.current_step ?? undefined,
+      totalSteps: result.total_steps ?? undefined
+    })
+    ElMessage.success('任务已从断点继续')
+  } catch (error: any) {
+    ElMessage.error(error?.response?.data?.detail || '续传任务失败')
+  }
+}
+
+// 页面加载时从后端恢复任务列表
+onMounted(async () => {
+  try {
+    const { tasks } = await taskApi.listTasks()
+    for (const t of tasks) {
+      // 只添加非终态的任务或最近失败/取消的任务
+      if (['pending', 'running', 'cancelling', 'failed', 'cancelled'].includes(t.status)) {
+        const taskName = t.type === 'generate_questions' ? '生成测试集'
+          : t.type === 'generate_conversation_cases' ? '生成对话用例'
+          : t.type === 'evaluation' ? '评估测试集'
+          : t.type === 'execute_testset' ? '执行测试集'
+          : t.type === 'document_analysis' ? '文档分析'
+          : '后台任务'
+        taskStore.addTask({
+          id: t.id,
+          name: taskName,
+          type: t.type === 'generate_questions' || t.type === 'testset_generation' ? 'testset'
+            : t.type === 'evaluation' ? 'evaluation'
+            : t.type === 'document_analysis' ? 'document'
+            : t.type?.includes('conversation') ? 'conversation' : 'testset',
+          progress: Math.round((t.progress || 0) * 100),
+          status: t.status === 'finished' ? 'completed' : t.status,
+          time: t.created_at ? new Date(t.created_at).toLocaleTimeString('zh-CN', { hour: '2-digit', minute: '2-digit', second: '2-digit' }) : '',
+          targetId: t.params?.testset_id,
+          error: t.error || undefined,
+          message: t.message || undefined,
+          currentStep: t.current_step ?? undefined,
+          totalSteps: t.total_steps ?? undefined,
+          contextInfo: t.context_info || t.contextInfo || undefined
+        })
+      }
+    }
+  } catch (e) {
+    // 忽略恢复失败
+  }
+})
 
 // 监听路由变化
 watch(
@@ -675,6 +759,12 @@ onUnmounted(() => {
           font-size: 12px;
           color: var(--text-2, #909399);
         }
+      }
+
+      .task-context {
+        font-size: 12px;
+        color: var(--text-2, #909399);
+        margin-bottom: 8px;
       }
 
       .task-footer {

@@ -24,6 +24,7 @@ class TaskManager:
     def __init__(self, max_workers: int = 4, poll_interval: float = 1.0):
         self._lock = threading.Lock()
         self._stop_event = threading.Event()
+        self._shutdown_event = threading.Event()  # 服务器关闭信号，通知所有运行中的任务
         self._worker_thread: Optional[threading.Thread] = None
         self._executor = ThreadPoolExecutor(max_workers=max_workers, thread_name_prefix="TaskWorker")
         self._active_task_ids = set()
@@ -47,12 +48,18 @@ class TaskManager:
         logger.info("持久化任务队列已启动")
 
     def stop_workers(self) -> None:
-        """停止轮询线程。"""
+        """停止轮询线程，并通知所有运行中的任务服务器正在关闭。"""
+        self._shutdown_event.set()  # 通知所有运行中的任务
         self._stop_event.set()
         worker = self._worker_thread
         if worker and worker.is_alive():
             worker.join(timeout=3)
         logger.info("持久化任务队列已停止")
+
+    @property
+    def is_shutting_down(self) -> bool:
+        """检查服务器是否正在关闭。"""
+        return self._shutdown_event.is_set()
 
     def create_task(
         self,
@@ -126,40 +133,49 @@ class TaskManager:
         *,
         current_step: Optional[int] = None,
         total_steps: Optional[int] = None,
+        context_info: Optional[Dict[str, Any]] = None,
     ) -> None:
         """更新任务进度。"""
-        db = SessionLocal()
         try:
-            task = db.query(BackgroundTask).filter(BackgroundTask.id == task_id).first()
-            if not task:
-                return
-            task.progress = max(0.0, min(1.0, float(progress)))
-            if message is not None:
-                task.message = str(message)
-            if current_step is not None:
-                task.current_step = int(current_step)
-            if total_steps is not None:
-                task.total_steps = int(total_steps)
-            db.commit()
-        finally:
-            db.close()
+            db = SessionLocal()
+            try:
+                task = db.query(BackgroundTask).filter(BackgroundTask.id == task_id).first()
+                if not task:
+                    return
+                task.progress = max(0.0, min(1.0, float(progress)))
+                if message is not None:
+                    task.message = str(message)
+                if current_step is not None:
+                    task.current_step = int(current_step)
+                if total_steps is not None:
+                    task.total_steps = int(total_steps)
+                if context_info is not None:
+                    task.context_info = dict(context_info)
+                db.commit()
+            finally:
+                db.close()
+        except Exception:
+            pass  # 进度更新失败不影响主流程
 
     def append_log(self, task_id: str, message: str) -> None:
         """追加任务日志。"""
         text = str(message or "").strip()
         if not text:
             return
-        db = SessionLocal()
         try:
-            task = db.query(BackgroundTask).filter(BackgroundTask.id == task_id).first()
-            if not task:
-                return
-            logs = list(task.logs or [])
-            logs.append(f"[{datetime.now().strftime('%H:%M:%S')}] {text}")
-            task.logs = logs[-200:]
-            db.commit()
-        finally:
-            db.close()
+            db = SessionLocal()
+            try:
+                task = db.query(BackgroundTask).filter(BackgroundTask.id == task_id).first()
+                if not task:
+                    return
+                logs = list(task.logs or [])
+                logs.append(f"[{datetime.now().strftime('%H:%M:%S')}] {text}")
+                task.logs = logs[-200:]
+                db.commit()
+            finally:
+                db.close()
+        except Exception:
+            pass  # 日志写入失败不影响主流程
 
     def finish_task(
         self,
@@ -169,6 +185,7 @@ class TaskManager:
         *,
         current_step: Optional[int] = None,
         total_steps: Optional[int] = None,
+        context_info: Optional[Dict[str, Any]] = None,
     ) -> None:
         """标记任务完成。"""
         db = SessionLocal()
@@ -189,6 +206,8 @@ class TaskManager:
                 task.total_steps = int(total_steps)
             elif task.total_steps is not None and task.current_step is None:
                 task.current_step = task.total_steps
+            if context_info is not None:
+                task.context_info = dict(context_info)
             db.commit()
             logger.info(f"任务完成: {task_id}")
         finally:
@@ -196,18 +215,21 @@ class TaskManager:
 
     def fail_task(self, task_id: str, error: str) -> None:
         """标记任务失败。"""
-        db = SessionLocal()
         try:
-            task = db.query(BackgroundTask).filter(BackgroundTask.id == task_id).first()
-            if not task:
-                return
-            task.status = "failed"
-            task.error = str(error or "")
-            task.finished_at = datetime.now()
-            db.commit()
-            logger.error(f"任务失败: {task_id}, 错误: {error}")
-        finally:
-            db.close()
+            db = SessionLocal()
+            try:
+                task = db.query(BackgroundTask).filter(BackgroundTask.id == task_id).first()
+                if not task:
+                    return
+                task.status = "failed"
+                task.error = str(error or "")
+                task.finished_at = datetime.now()
+                db.commit()
+                logger.error(f"任务失败: {task_id}, 错误: {error}")
+            finally:
+                db.close()
+        except Exception as e:
+            logger.warning(f"标记任务失败时DB操作异常（可能服务器已关闭）: task_id={task_id}, error={e}")
 
     def cancel_task(self, task_id: str) -> Dict[str, Any]:
         """取消任务。
@@ -259,6 +281,7 @@ class TaskManager:
             task.result = None
             task.current_step = 0
             task.total_steps = None
+            task.context_info = None
             task.worker_id = None
             task.claimed_at = None
             task.started_at = None
@@ -269,8 +292,67 @@ class TaskManager:
         finally:
             db.close()
 
+    def resume_task(self, task_id: str) -> Dict[str, Any]:
+        """断点续传：从上次失败处继续，保留已生成的结果。"""
+        db = SessionLocal()
+        try:
+            task = db.query(BackgroundTask).filter(BackgroundTask.id == task_id).first()
+            if not task:
+                raise RuntimeError("任务不存在")
+            if task.status not in {"failed", "cancelled"}:
+                raise RuntimeError("只有失败或已取消的任务才支持断点续传")
+
+            # 注意：不调用 prepare_task_for_retry()，保留已有问题
+            logs = list(task.logs or [])
+            logs.append(f"[{datetime.now().strftime('%H:%M:%S')}] 用户请求断点续传")
+
+            task.status = "pending"
+            task.progress = 0.0
+            task.message = "任务续传：从断点继续"
+            task.error = ""
+            task.result = None
+            # 保留 context_info（包含 checkpoint 数据）
+            # 保留 current_step/total_steps
+            task.worker_id = None
+            task.claimed_at = None
+            task.started_at = None
+            task.finished_at = None
+            task.logs = logs[-200:]
+            task.attempt_count = (task.attempt_count or 0) + 1
+            db.commit()
+            return self._serialize_task(task)
+        finally:
+            db.close()
+
+    def update_context_info(self, task_id: str, context_info: Dict[str, Any]) -> None:
+        """更新任务的 context_info 字段（用于断点续传的 checkpoint 存储）。"""
+        try:
+            db = SessionLocal()
+            try:
+                task = db.query(BackgroundTask).filter(BackgroundTask.id == task_id).first()
+                if task:
+                    task.context_info = dict(context_info)
+                    db.commit()
+            finally:
+                db.close()
+        except Exception:
+            pass  # checkpoint 更新失败不影响主流程
+
+    def list_recent_tasks(self, limit: int = 20) -> List[Dict[str, Any]]:
+        """获取最近的任务列表（用于前端刷新恢复）。"""
+        db = SessionLocal()
+        try:
+            tasks = db.query(BackgroundTask).order_by(
+                BackgroundTask.created_at.desc()
+            ).limit(limit).all()
+            return [self._serialize_task(task) for task in tasks]
+        finally:
+            db.close()
+
     def ensure_not_cancelled(self, task_id: str) -> None:
-        """在长任务执行过程中检查是否收到取消请求。"""
+        """在长任务执行过程中检查是否收到取消请求或服务器正在关闭。"""
+        if self._shutdown_event.is_set():
+            raise TaskCancelledError("服务器正在关闭，任务终止")
         db = SessionLocal()
         try:
             task = db.query(BackgroundTask).filter(BackgroundTask.id == task_id).first()
@@ -283,18 +365,21 @@ class TaskManager:
 
     def mark_cancelled(self, task_id: str, message: Optional[str] = None) -> None:
         """将任务标记为已取消。"""
-        db = SessionLocal()
         try:
-            task = db.query(BackgroundTask).filter(BackgroundTask.id == task_id).first()
-            if not task:
-                return
-            task.status = "cancelled"
-            task.message = message or "任务已取消"
-            task.error = message or "任务已取消"
-            task.finished_at = datetime.now()
-            db.commit()
-        finally:
-            db.close()
+            db = SessionLocal()
+            try:
+                task = db.query(BackgroundTask).filter(BackgroundTask.id == task_id).first()
+                if not task:
+                    return
+                task.status = "cancelled"
+                task.message = message or "任务已取消"
+                task.error = message or "任务已取消"
+                task.finished_at = datetime.now()
+                db.commit()
+            finally:
+                db.close()
+        except Exception as e:
+            logger.warning(f"标记任务取消失败（可能服务器已关闭）: task_id={task_id}, error={e}")
 
     def get_task(self, task_id: str) -> Optional[Dict[str, Any]]:
         """获取任务信息。"""
@@ -345,6 +430,8 @@ class TaskManager:
             "result": task.result,
             "error": task.error or "",
             "params": task.params or {},
+            "context_info": task.context_info or {},
+            "contextInfo": task.context_info or {},
             "current_step": task.current_step,
             "total_steps": task.total_steps,
             "created_at": task.created_at.isoformat() if task.created_at else None,
@@ -353,6 +440,7 @@ class TaskManager:
             "finished_at": task.finished_at.isoformat() if task.finished_at else None,
             "can_cancel": task.status in {"pending", "running", "cancelling"},
             "can_retry": task.status in {"failed", "cancelled"},
+            "can_resume": task.status in {"failed", "cancelled"} and bool(task.context_info),
         }
 
     def _reset_running_tasks(self) -> None:

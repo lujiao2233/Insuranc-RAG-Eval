@@ -1,5 +1,14 @@
 import { request } from './index'
-import type { TestSet, Question, PaginatedResponse, TaskStatus } from '@/types'
+import type {
+  TestSet,
+  Question,
+  PaginatedResponse,
+  TaskStatus,
+  ConversationCase,
+  ConversationTurn,
+  ConversationExecution,
+  ConversationTurnResult
+} from '@/types'
 
 export const testsetApi = {
   getTestSets(params?: { skip?: number; limit?: number; document_id?: string; stage?: 'base' | 'evaluation' | 'report' }): Promise<PaginatedResponse<TestSet>> {
@@ -34,6 +43,23 @@ export const testsetApi = {
     question_type?: string
   }): Promise<PaginatedResponse<Question>> {
     return request.get(`/testsets/${testsetId}/questions`, params)
+  },
+
+  getConversationCases(testsetId: string): Promise<{ items: ConversationCase[]; total: number }> {
+    return request.get(`/testsets/${testsetId}/conversation_cases`)
+  },
+
+  getConversationCase(testsetId: string, caseId: string): Promise<ConversationCase> {
+    return request.get(`/testsets/${testsetId}/conversation_cases/${caseId}`)
+  },
+
+  updateConversationTurn(
+    testsetId: string,
+    caseId: string,
+    turnId: string,
+    data: Partial<ConversationTurn>
+  ): Promise<ConversationTurn> {
+    return request.put(`/testsets/${testsetId}/conversation_cases/${caseId}/turns/${turnId}`, data)
   },
 
   addQuestion(testsetId: string, data: Partial<Question>): Promise<Question> {
@@ -74,8 +100,23 @@ export const testsetApi = {
     multi_doc_ratio?: number
     document_ids?: string[]
     persona_list?: Array<Record<string, any>>
+    distribution_mode?: 'per_doc' | 'total'
+    questions_per_doc?: number
   }): Promise<{ task_id: string; message: string }> {
     return request.post(`/testsets/${testsetId}/generate_async`, params)
+  },
+
+  generateConversationQuestions(testsetId: string, params: {
+    num_cases?: number
+    turn_range?: [number, number]
+    case_type_ratio?: {
+      single_chunk_deep: number
+      same_doc_chain: number
+      cross_doc_assoc: number
+    }
+    document_ids?: string[]
+  }): Promise<{ task_id: string; message: string }> {
+    return request.post(`/testsets/${testsetId}/generate_conversation`, params)
   },
 
   getTaskStatus(taskId: string): Promise<TaskStatus> {
@@ -132,5 +173,27 @@ export const testsetApi = {
 
   startExecution(testsetId: string, data: { mobile: string; verify_code: string; bot_id: string }) {
     return request.post<{ task_id: string; message: string; execution_testset_id?: string }>(`/testsets/${testsetId}/execution/start`, data)
+  },
+
+  startConversationExecution(testsetId: string, data: { mobile: string; verify_code: string; bot_id: string }) {
+    return request.post<{
+      task_id: string
+      message: string
+      execution_id: string
+      execution_evaluation_id?: string
+      execution_testset_id?: string
+    }>(`/testsets/${testsetId}/conversation_execution/start`, data)
+  },
+
+  getConversationExecution(executionId: string): Promise<ConversationExecution> {
+    return request.get(`/testsets/conversation_executions/${executionId}`)
+  },
+
+  getConversationTurnResults(executionId: string): Promise<{
+    execution: ConversationExecution
+    items: ConversationTurnResult[]
+    total: number
+  }> {
+    return request.get(`/testsets/conversation_executions/${executionId}/turn_results`)
   }
 }

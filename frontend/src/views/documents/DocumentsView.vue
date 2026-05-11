@@ -39,24 +39,17 @@
           <el-option label="停用" value="inactive" />
         </el-select>
         
-        <el-select
-          v-model="categoryFilter"
+        <el-cascader
+          v-model="categoryFilterPath"
+          :options="categoryTree"
           placeholder="文档分类"
           clearable
-          style="width: 150px;"
-          @change="handleFilterChange"
+          style="width: 200px;"
           filterable
-          allow-create
-          default-first-option
-        >
-          <el-option label="全部" value="" />
-          <el-option label="内部产品" value="内部产品" />
-          <el-option label="外部产品" value="外部产品" />
-          <el-option label="公司制度" value="公司制度" />
-          <el-option label="公开文件" value="公开文件" />
-          <el-option label="未分类" value="未分类" />
-          <el-option label="自定义" value="custom" />
-        </el-select>
+          :props="{ expandTrigger: 'hover', checkStrictly: true }"
+          :filter-method="filterMethod"
+          @change="handleFilterChange"
+        />
       </div>
       
       <div class="table-toolbar section-sm">
@@ -102,10 +95,10 @@
             {{ getPageCountText(row) }}
           </template>
         </el-table-column>
-        <el-table-column prop="category" label="分类" width="120">
+        <el-table-column prop="category" label="分类" width="180">
           <template #default="{ row }">
             <el-tag :type="getCategoryType(row.category)">
-              {{ row.category }}
+              {{ formatCategoryPath(row.category) }}
             </el-tag>
           </template>
         </el-table-column>
@@ -114,11 +107,6 @@
             <el-tag :type="getStatusType(getUnifiedStatus(row))">
               {{ getStatusText(getUnifiedStatus(row)) }}
             </el-tag>
-          </template>
-        </el-table-column>
-        <el-table-column prop="upload_time" label="上传时间" width="180">
-          <template #default="{ row }">
-            {{ formatDateTime(row.upload_time) }}
           </template>
         </el-table-column>
         <el-table-column label="操作" width="240" fixed="right">
@@ -138,10 +126,10 @@
                 type="primary" 
                 size="small"
                 :loading="isDocumentProcessing(row)"
-                :disabled="row.is_analyzed || isDocumentProcessing(row)"
+                :disabled="isDocumentProcessing(row)"
                 @click="analyzeDocument(row)"
               >
-                {{ isDocumentProcessing(row) ? '分析中' : (row.is_analyzed ? '已分析' : '分析') }}
+                {{ isDocumentProcessing(row) ? '分析中' : (row.is_analyzed ? '重新分析' : '分析') }}
               </el-button>
               <el-button 
                 link
@@ -203,26 +191,22 @@
       
       <div class="upload-category-section" style="margin-top: 20px;">
         <label style="display: block; margin-bottom: 8px;">文档分类:</label>
-        <el-select
-          v-model="uploadCategory"
+        <el-cascader
+          v-model="uploadCategoryPath"
+          :options="categoryTree"
           placeholder="请选择文档分类"
-          style="width: 70%; margin-right: 10px;"
+          style="width: 100%;"
           filterable
-          allow-create
-          default-first-option
-        >
-          <el-option label="内部产品" value="内部产品" />
-          <el-option label="外部产品" value="外部产品" />
-          <el-option label="公司制度" value="公司制度" />
-          <el-option label="公开文件" value="公开文件" />
-          <el-option label="自定义" value="custom" />
-          <el-option label="未分类" value="未分类" />
-        </el-select>
+          clearable
+          :props="{ expandTrigger: 'hover', checkStrictly: true }"
+          :filter-method="filterMethod"
+          @change="handleCategoryChange"
+        />
         <el-input
-          v-if="uploadCategory === 'custom'"
+          v-if="showCustomCategory"
           v-model="customCategory"
           placeholder="请输入自定义分类"
-          style="width: 28%;"
+          style="margin-top: 8px;"
         />
       </div>
       
@@ -245,23 +229,26 @@ import { useDocumentStore } from '@/stores/document'
 import { documentApi } from '@/api/documents'
 import { useTaskStore } from '@/stores/task'
 import { formatDateTime } from '@/utils/format'
+import { useCategoryHierarchy } from '@/composables/useCategoryHierarchy'
 import type { UploadFile } from 'element-plus'
 import type { Document } from '@/types'
 
 const router = useRouter()
 const documentStore = useDocumentStore()
 const taskStore = useTaskStore()
+const { categoryTree, getCategoryPath } = useCategoryHierarchy()
 
 const searchText = ref('')
 const statusFilter = ref('')
-const categoryFilter = ref('')
+const categoryFilterPath = ref<string[]>([])
 const currentPage = ref(1)
 const showUploadDialog = ref(false)
 const uploading = ref(false)
 const selectedFiles = ref<File[]>([])
 const uploadRef = ref()
 const isAnalyzing = ref<Record<string, boolean>>({})
-const uploadCategory = ref('未分类')
+const uploadCategoryPath = ref<string[]>([])
+const showCustomCategory = ref(false)
 const customCategory = ref('')
 const multipleSelection = ref<Document[]>([])
 const batchOperation = ref('')
@@ -301,7 +288,7 @@ const pollDocumentTaskStatus = (taskId: string, documentId: string) => {
         await documentStore.fetchDocuments({
           status: statusFilter.value === 'unanalyzed' ? 'active' : (statusFilter.value || undefined),
           is_analyzed: statusFilter.value === 'unanalyzed' ? false : (statusFilter.value === 'active' ? true : undefined),
-          category: categoryFilter.value || undefined
+          category: getCategoryFilterValue()
         })
         return
       }
@@ -312,7 +299,7 @@ const pollDocumentTaskStatus = (taskId: string, documentId: string) => {
         await documentStore.fetchDocuments({
           status: statusFilter.value === 'unanalyzed' ? 'active' : (statusFilter.value || undefined),
           is_analyzed: statusFilter.value === 'unanalyzed' ? false : (statusFilter.value === 'active' ? true : undefined),
-          category: categoryFilter.value || undefined
+          category: getCategoryFilterValue()
         })
         return
       }
@@ -323,7 +310,7 @@ const pollDocumentTaskStatus = (taskId: string, documentId: string) => {
         await documentStore.fetchDocuments({
           status: statusFilter.value === 'unanalyzed' ? 'active' : (statusFilter.value || undefined),
           is_analyzed: statusFilter.value === 'unanalyzed' ? false : (statusFilter.value === 'active' ? true : undefined),
-          category: categoryFilter.value || undefined
+          category: getCategoryFilterValue()
         })
         return
       }
@@ -361,7 +348,7 @@ const startPolling = () => {
       documentStore.fetchDocuments({
         status: statusFilter.value === 'unanalyzed' ? 'active' : (statusFilter.value || undefined),
         is_analyzed: statusFilter.value === 'unanalyzed' ? false : (statusFilter.value === 'active' ? true : undefined),
-        category: categoryFilter.value || undefined
+        category: getCategoryFilterValue()
       })
     } else {
       stopPolling()
@@ -457,6 +444,23 @@ const getCategoryType = (category: string) => {
   return (types[category] || 'info') as any
 }
 
+const formatCategoryPath = (category: string): string => {
+  if (!category || category === '未分类') return '未分类'
+  const parts = category.split('/')
+  if (parts.length >= 3) {
+    const level1 = parts[0].replace(/^共享知识库-/, '')
+    return `${level1}/${parts[1]}/${parts[2]}`
+  }
+  return category
+}
+
+const getCategoryFilterValue = (): string | undefined => {
+  if (!categoryFilterPath.value || categoryFilterPath.value.length === 0) {
+    return undefined
+  }
+  return categoryFilterPath.value.join('/')
+}
+
 const getStatusText = (status: string) => {
   const texts: Record<string, string> = {
     unanalyzed: '未分析',
@@ -489,14 +493,18 @@ const handleFilterChange = () => {
 
 const handlePageChange = (page: number) => {
   currentPage.value = page
-  documentStore.setPage(page)
+  documentStore.setPage(page, {
+    status: statusFilter.value === 'unanalyzed' ? 'active' : (statusFilter.value || undefined),
+    is_analyzed: statusFilter.value === 'unanalyzed' ? false : (statusFilter.value === 'active' ? true : undefined),
+    category: getCategoryFilterValue()
+  })
 }
 
 const fetchDocuments = () => {
   return documentStore.fetchDocuments({
     status: statusFilter.value === 'unanalyzed' ? 'active' : (statusFilter.value || undefined),
     is_analyzed: statusFilter.value === 'unanalyzed' ? false : (statusFilter.value === 'active' ? true : undefined),
-    category: categoryFilter.value || undefined
+    category: getCategoryFilterValue()
   })
 }
 
@@ -660,6 +668,17 @@ const analyzeDocument = async (doc: Document) => {
   isAnalyzing.value[doc.id] = true
   
   try {
+    if (doc.is_analyzed) {
+      await ElMessageBox.confirm(
+        `重新分析会覆盖文档 "${doc.filename}" 当前已有的提纲、元数据和切片结果，是否继续？`,
+        '重新分析确认',
+        {
+          confirmButtonText: '继续',
+          cancelButtonText: '取消',
+          type: 'warning'
+        }
+      )
+    }
     const result = await documentApi.analyzeDocument(doc.id)
     
     // 添加到全局任务列表
@@ -677,6 +696,9 @@ const analyzeDocument = async (doc: Document) => {
     
     fetchDocuments()
   } catch (error: any) {
+    if (error === 'cancel') {
+      return
+    }
     console.error('分析失败:', error)
     ElMessage.error(error?.response?.data?.detail || '启动分析失败')
   } finally {
@@ -737,15 +759,40 @@ const handleDelete = async (doc: Document) => {
 const handleFileChange = (file: UploadFile) => {
   console.log('handleFileChange called:', file)
   console.log('file.raw:', file?.raw)
-  // 不再单独设置 selectedFile，而是收集所有文件
   if (file.raw) {
-    // 如果是新文件，添加到数组中
     if (!selectedFiles.value.some(f => f.name === file.raw!.name && f.size === file.raw!.size)) {
       selectedFiles.value.push(file.raw!)
     }
   } else {
     console.log('file.raw is undefined!')
   }
+}
+
+const handleCategoryChange = (values: string[]) => {
+  if (!values || values.length === 0) {
+    showCustomCategory.value = false
+    return
+  }
+  if (values.length === 3 && values[2] === '自定义') {
+    showCustomCategory.value = true
+  } else {
+    showCustomCategory.value = false
+  }
+}
+
+const filterMethod = (node: any, keyword: string) => {
+  const text = node.text?.toLowerCase() || ''
+  return text.includes(keyword.toLowerCase())
+}
+
+const getCategoryValue = (): string => {
+  if (uploadCategoryPath.value.length === 0) {
+    return '未分类'
+  }
+  if (uploadCategoryPath.value.length === 3 && uploadCategoryPath.value[2] === '自定义' && customCategory.value.trim()) {
+    return customCategory.value.trim()
+  }
+  return getCategoryPath(uploadCategoryPath.value)
 }
 
 const handleUpload = async () => {
@@ -760,31 +807,22 @@ const handleUpload = async () => {
   uploading.value = true
   console.log('Starting upload for:', selectedFiles.value.length, 'files')
   
-  // 确定要使用的分类
-  let finalCategory = uploadCategory.value
-  if (uploadCategory.value === 'custom' && customCategory.value.trim()) {
-    finalCategory = customCategory.value.trim()
-  } else if (uploadCategory.value === 'custom' && !customCategory.value.trim()) {
-    // 如果选择了自定义但没有输入，则使用默认值
-    finalCategory = '未分类'
-  } else if (!uploadCategory.value) {
-    finalCategory = '未分类'
-  }
+  const finalCategory = getCategoryValue()
   
   try {
-    // 使用批量上传方法，支持立即分析
     const formData = new FormData()
     selectedFiles.value.forEach(file => formData.append('files', file))
     formData.append('category', finalCategory)
-    formData.append('analyze', 'false') // 默认不立即分析，用户可以在上传后选择分析
+    formData.append('analyze', 'false')
     
     await documentStore.uploadDocumentsBatch(selectedFiles.value, finalCategory)
     
     ElMessage.success(`成功上传 ${selectedFiles.value.length} 个文件`)
     showUploadDialog.value = false
-    selectedFiles.value = [] // 清空文件列表
-    uploadCategory.value = '未分类' // 重置分类选择
-    customCategory.value = '' // 清空自定义分类
+    selectedFiles.value = []
+    uploadCategoryPath.value = []
+    customCategory.value = ''
+    showCustomCategory.value = false
     uploadRef.value?.clearFiles()
     fetchDocuments()
   } catch (error) {

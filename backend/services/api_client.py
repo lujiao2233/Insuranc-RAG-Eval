@@ -21,7 +21,7 @@ import json
 import base64
 import threading
 import logging
-from typing import Any, Dict, List
+from typing import Any, Dict, List, Optional
 
 import requests
 from requests.exceptions import ChunkedEncodingError
@@ -341,23 +341,33 @@ class TalkApiClient:
         resp.raise_for_status()
         return resp
 
-    def chat(self, msg: str) -> Dict[str, Any]:
+    def _build_chat_payload(
+        self,
+        msg: str,
+        session_id: str = "",
+        new_dialog: bool = True,
+    ) -> Dict[str, Any]:
+        return {
+            "botId": self.bot_id,
+            "visitorBizId": self.mobile,
+            "userType": self.user_type,
+            "sessionId": session_id or "",
+            "newDialog": bool(new_dialog),
+            "msg": msg,
+        }
+
+    def chat(self, msg: str, session_id: str = "", new_dialog: bool = True) -> Dict[str, Any]:
         """发送聊天消息
         
         Args:
             msg: 聊天消息内容
+            session_id: 会话ID，首轮为空
+            new_dialog: 是否新建对话
             
         Returns:
             聊天响应数据
         """
-        payload = {
-            "botId": self.bot_id,
-            "visitorBizId": self.mobile,
-            "userType": self.user_type,
-            "sessionId": "",
-            "newDialog": True,
-            "msg": msg,
-        }
+        payload = self._build_chat_payload(msg, session_id=session_id, new_dialog=new_dialog)
         files = {
             "paramJsonStr": (None, json.dumps(payload, ensure_ascii=False)),
         }
@@ -368,7 +378,179 @@ class TalkApiClient:
             timeout=30,
         )
         resp.raise_for_status()
-        return resp.json()
+        try:
+            data = resp.json()
+        except ValueError:
+            data = {"status_code": resp.status_code, "text": resp.text}
+        if isinstance(data, dict):
+            data.setdefault("request_payload", payload)
+        return data
+
+    def _collect_ref_titles_from_object(self, obj: Dict[str, Any], ref_titles: List[str]) -> None:
+        for key in (
+            "title",
+            "docTitle",
+            "documentTitle",
+            "knowledgeTitle",
+            "knowledgeName",
+            "docName",
+            "sourceTitle",
+            "fileName",
+            "question",
+            "name",
+        ):
+            value = obj.get(key)
+            if (
+                isinstance(value, str)
+                and value.strip()
+                and len(value.strip()) <= 120
+                and value.strip() not in ref_titles
+            ):
+                ref_titles.append(value.strip())
+                break
+
+        knowledge = obj.get("knowledgeList")
+        if isinstance(knowledge, list):
+            for item in knowledge:
+                if isinstance(item, dict):
+                    self._collect_ref_titles_from_object(item, ref_titles)
+
+    def _stream_chat_with_details(
+        self,
+        msg: str,
+        *,
+        session_id: str = "",
+        new_dialog: bool = True,
+        listen_seconds: float = 120.0,
+        max_retries: int = 1,
+    ) -> Dict[str, Any]:
+        for attempt in range(max_retries + 1):
+            replies: List[str] = []
+            ref_titles: List[str] = []
+            raw_events: List[Dict[str, Any]] = []
+            had_stream_error = False
+            timed_out = False
+            reached_end = False
+            latest_session_id = str(session_id or "")
+            request_payload = self._build_chat_payload(msg, session_id=session_id, new_dialog=new_dialog)
+            chat_response_payload: Dict[str, Any] | None = None
+
+            resp = self.open_sse_stream()
+
+            def reader():
+                nonlocal had_stream_error, timed_out, reached_end, latest_session_id
+                start = time.time()
+                try:
+                    try:
+                        for raw in resp.iter_lines(decode_unicode=False):
+                            if not raw:
+                                if time.time() - start > listen_seconds:
+                                    timed_out = True
+                                    break
+                                continue
+                            try:
+                                text = raw.decode("utf-8")
+                            except UnicodeDecodeError:
+                                text = raw.decode("latin1", errors="replace")
+                            if not text.startswith("data:"):
+                                continue
+                            payload = text[len("data:") :].strip()
+                            if not payload or payload == "HEARTBEAT_STREAM":
+                                if time.time() - start > listen_seconds:
+                                    timed_out = True
+                                    break
+                                continue
+                            if payload == "END_OF_STREAM":
+                                reached_end = True
+                                break
+                            try:
+                                obj = json.loads(payload)
+                            except json.JSONDecodeError:
+                                raw_events.append({"raw": payload})
+                                if time.time() - start > listen_seconds:
+                                    timed_out = True
+                                    break
+                                continue
+                            if isinstance(obj, dict):
+                                raw_events.append(obj)
+                                reply = obj.get("reply")
+                                if isinstance(reply, str):
+                                    replies.append(reply)
+                                parsed_session_id = str(obj.get("sessionId") or "").strip()
+                                if parsed_session_id:
+                                    latest_session_id = parsed_session_id
+                                self._collect_ref_titles_from_object(obj, ref_titles)
+                            if time.time() - start > listen_seconds:
+                                timed_out = True
+                                break
+                    except ChunkedEncodingError as e:
+                        had_stream_error = True
+                        logger.warning("SSE chat stream ended prematurely: %s", e)
+                    except Exception:
+                        had_stream_error = True
+                        logger.exception("Unexpected error in SSE chat reader")
+                finally:
+                    resp.close()
+
+            t = threading.Thread(target=reader, daemon=True)
+            t.start()
+            time.sleep(1.0)
+            try:
+                chat_response_payload = self.chat(
+                    msg,
+                    session_id=session_id,
+                    new_dialog=new_dialog,
+                )
+            except Exception:
+                had_stream_error = True
+                logger.exception("Chat request failed for message: %s", msg)
+            t.join(timeout=listen_seconds + 5)
+
+            answer = "".join(replies)
+            refs = " | ".join(ref_titles)
+            status = "ok" if reached_end and not had_stream_error and not timed_out else "partial"
+            if not reached_end and (had_stream_error or timed_out) and attempt < max_retries:
+                logger.warning(
+                    "Chat attempt %s incomplete for message '%s' "
+                    "(reached_end=%s, stream_error=%s, timed_out=%s)",
+                    attempt + 1,
+                    msg,
+                    reached_end,
+                    had_stream_error,
+                    timed_out,
+                )
+                continue
+            return {
+                "answer": answer,
+                "status": status,
+                "refs": refs,
+                "session_id": latest_session_id,
+                "request_payload": request_payload,
+                "response_payload": {
+                    "chat_response": chat_response_payload,
+                    "events": raw_events,
+                    "reached_end": reached_end,
+                    "timed_out": timed_out,
+                    "stream_error": had_stream_error,
+                    "session_id": latest_session_id,
+                },
+            }
+
+        return {
+            "answer": "",
+            "status": "failed",
+            "refs": "",
+            "session_id": str(session_id or ""),
+            "request_payload": request_payload,
+            "response_payload": {
+                "chat_response": chat_response_payload,
+                "events": raw_events,
+                "reached_end": False,
+                "timed_out": True,
+                "stream_error": True,
+                "session_id": str(session_id or ""),
+            },
+        }
 
     def debug_sse_once(self, msg: str, listen_seconds: float = 120.0) -> List[str]:
         """调试SSE流
@@ -461,129 +643,56 @@ class TalkApiClient:
         Returns:
             (答案, 状态, 引用) 的元组
         """
-        for attempt in range(max_retries + 1):
-            replies: List[str] = []
-            got_knowledge = False
-            had_stream_error = False
-            timed_out = False
-            ref_titles: List[str] = []
+        result = self._stream_chat_with_details(
+            msg,
+            session_id="",
+            new_dialog=True,
+            listen_seconds=listen_seconds,
+            max_retries=max_retries,
+        )
+        return (
+            str(result.get("answer") or ""),
+            str(result.get("status") or "failed"),
+            str(result.get("refs") or ""),
+        )
 
-            resp = self.open_sse_stream()
+    def chat_with_session(
+        self,
+        msg: str,
+        session_id: str,
+        new_dialog: bool = False,
+        listen_seconds: float = 120.0,
+        max_retries: int = 1,
+    ) -> tuple[str, str, str, str]:
+        result = self._stream_chat_with_details(
+            msg,
+            session_id=session_id,
+            new_dialog=new_dialog,
+            listen_seconds=listen_seconds,
+            max_retries=max_retries,
+        )
+        return (
+            str(result.get("answer") or ""),
+            str(result.get("status") or "failed"),
+            str(result.get("refs") or ""),
+            str(result.get("session_id") or session_id or ""),
+        )
 
-            def reader():
-                """SSE流读取器
-                
-                读取SSE流数据，提取答案、状态和引用
-                """
-                nonlocal got_knowledge, had_stream_error, timed_out
-                start = time.time()
-                try:
-                    try:
-                        for raw in resp.iter_lines(decode_unicode=False):
-                            if not raw:
-                                continue
-                            try:
-                                text = raw.decode("utf-8")
-                            except UnicodeDecodeError:
-                                text = raw.decode("latin1", errors="replace")
-                            if not text.startswith("data:"):
-                                continue
-                            payload = text[len("data:") :].strip()
-                            if not payload or payload == "HEARTBEAT_STREAM":
-                                continue
-                            if payload == "END_OF_STREAM":
-                                got_knowledge = True
-                                break
-                            try:
-                                obj = json.loads(payload)
-                            except json.JSONDecodeError:
-                                continue
-                            reply = obj.get("reply")
-                            if isinstance(reply, str):
-                                replies.append(reply)
-                            for key in (
-                                "title",
-                                "docTitle",
-                                "documentTitle",
-                                "knowledgeTitle",
-                                "knowledgeName",
-                                "docName",
-                                "sourceTitle",
-                                "fileName",
-                                "question",
-                            ):
-                                value = obj.get(key)
-                                if (
-                                    isinstance(value, str)
-                                    and value.strip()
-                                    and len(value.strip()) <= 120
-                                    and value.strip() not in ref_titles
-                                ):
-                                    ref_titles.append(value.strip())
-                                    break
-                            knowledge = obj.get("knowledgeList")
-                            if knowledge is not None:
-                                if isinstance(knowledge, list):
-                                    for item in knowledge:
-                                        if not isinstance(item, dict):
-                                            continue
-                                        title_value = None
-                                        for key in (
-                                            "title",
-                                            "docTitle",
-                                            "documentTitle",
-                                            "name",
-                                            "question",
-                                        ):
-                                            value = item.get(key)
-                                            if isinstance(value, str) and value.strip():
-                                                title_value = value.strip()
-                                                break
-                                        if (
-                                            title_value
-                                            and title_value not in ref_titles
-                                        ):
-                                            ref_titles.append(title_value)
-                                got_knowledge = True
-                                break
-                            if time.time() - start > listen_seconds:
-                                timed_out = True
-                                break
-                    except ChunkedEncodingError as e:
-                        had_stream_error = True
-                        logger.warning("SSE chat stream ended prematurely: %s", e)
-                    except Exception:
-                        had_stream_error = True
-                        logger.exception("Unexpected error in SSE chat reader")
-                finally:
-                    resp.close()
-
-            t = threading.Thread(target=reader, daemon=True)
-            t.start()
-            time.sleep(1.0)
-            try:
-                self.chat(msg)
-            except Exception:
-                had_stream_error = True
-                logger.exception("Chat request failed for message: %s", msg)
-            t.join(timeout=listen_seconds + 5)
-
-            answer = "".join(replies)
-            refs = " | ".join(ref_titles)
-            if got_knowledge and not had_stream_error and not timed_out:
-                return answer, "ok", refs
-
-            logger.warning(
-                "Chat attempt %s incomplete for message '%s' "
-                "(got_knowledge=%s, stream_error=%s, timed_out=%s)",
-                attempt + 1,
-                msg,
-                got_knowledge,
-                had_stream_error,
-                timed_out,
-            )
-            if attempt == max_retries:
-                return answer, "partial", refs
+    def chat_with_session_details(
+        self,
+        msg: str,
+        session_id: str,
+        new_dialog: bool = False,
+        listen_seconds: float = 120.0,
+        max_retries: int = 1,
+    ) -> Dict[str, Any]:
+        return self._stream_chat_with_details(
+            msg,
+            session_id=session_id,
+            new_dialog=new_dialog,
+            listen_seconds=listen_seconds,
+            max_retries=max_retries,
+        )
 
     def chat_with_answer(self, msg: str, listen_seconds: float = 120.0) -> str:
         """获取答案

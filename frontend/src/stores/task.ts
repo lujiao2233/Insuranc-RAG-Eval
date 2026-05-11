@@ -4,7 +4,7 @@ import { ref, computed } from 'vue'
 export interface AppTask {
   id: string
   name: string
-  type: 'testset' | 'evaluation' | 'document'
+  type: 'testset' | 'evaluation' | 'document' | 'conversation'
   progress: number
   status: 'pending' | 'running' | 'cancelling' | 'cancelled' | 'completed' | 'failed'
   time: string
@@ -13,6 +13,12 @@ export interface AppTask {
   message?: string
   currentStep?: number
   totalSteps?: number
+  contextInfo?: {
+    currentCase?: number
+    currentTurn?: number
+    totalCases?: number
+    sessionId?: string
+  }
 }
 
 export const useTaskStore = defineStore('task', () => {

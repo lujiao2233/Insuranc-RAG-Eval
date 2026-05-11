@@ -128,8 +128,11 @@ export const useDocumentStore = defineStore('document', () => {
     }
   }
 
-  function setPage(page: number) {
+  function setPage(page: number, newFilters?: Partial<typeof filters.value>) {
     pagination.value.page = page
+    if (newFilters) {
+      filters.value = { ...filters.value, ...newFilters }
+    }
     fetchDocuments()
   }
 

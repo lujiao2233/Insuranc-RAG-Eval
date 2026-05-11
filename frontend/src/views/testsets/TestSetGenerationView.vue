@@ -38,50 +38,146 @@
                 {{ selectedDocumentPreviewText }}
               </div>
             </el-form-item>
+            <el-form-item label="生成模式">
+              <el-radio-group v-model="form.generationMode">
+                <el-radio-button label="single_turn">单轮</el-radio-button>
+                <el-radio-button label="multi_turn">多轮</el-radio-button>
+              </el-radio-group>
+            </el-form-item>
             <el-divider content-position="left">生成参数</el-divider>
             
-            <!-- 问题数量 -->
-            <el-form-item label="每个文档问题数">
-              <el-input-number 
-                v-model="form.questionsPerDoc" 
-                :min="1" 
-                :max="50"
-                style="width: 100%;"
-              />
-            </el-form-item>
-            
-            <el-form-item label="鲁棒性/输入质量类">
-              <el-switch 
-                v-model="form.enableRobustnessInputQuality"
-                active-text="启用"
-                inactive-text="禁用"
-              />
-              <div class="form-help">控制错别字、意图模糊、指代消解等问题生成</div>
-            </el-form-item>
-            
-            <el-form-item label="合规与安全类">
-              <el-switch 
-                v-model="form.enableComplianceSafety"
-                active-text="启用"
-                inactive-text="禁用"
-              />
-              <div class="form-help">控制安全合规、隐私等风险问题生成</div>
-            </el-form-item>
-            
-            <!-- 人物画像JSON -->
-            <el-form-item label="人物画像JSON">
-              <el-input
-                v-model="form.personaJson"
-                type="textarea"
-                :rows="6"
-                placeholder="请输入人物画像JSON配置，格式示例：
+            <template v-if="!isConversationMode">
+              <!-- 生成分布模式 -->
+              <el-form-item label="题目分配方式">
+                <el-radio-group v-model="form.distributionMode">
+                  <el-radio-button label="per_doc">按文档生成</el-radio-button>
+                  <el-radio-button label="total">按总量生成</el-radio-button>
+                </el-radio-group>
+                <div class="form-help" v-if="form.distributionMode === 'per_doc'">每个文档独立生成指定数量的题目，保证文档覆盖</div>
+                <div class="form-help" v-else>输入总题目数，系统按题型比例分配</div>
+              </el-form-item>
+
+              <!-- 按文档生成：每文档问题数 -->
+              <el-form-item v-if="form.distributionMode === 'per_doc'" label="每个文档问题数">
+                <el-input-number 
+                  v-model="form.questionsPerDoc" 
+                  :min="1" 
+                  :max="50"
+                  style="width: 100%;"
+                />
+              </el-form-item>
+
+              <!-- 按总量生成：总题目数 -->
+              <el-form-item v-if="form.distributionMode === 'total'" label="总题目数">
+                <el-input-number 
+                  v-model="form.numTotalQuestions" 
+                  :min="1" 
+                  style="width: 100%;"
+                />
+              </el-form-item>
+              
+              <!-- 按总量生成时才显示鲁棒性/安全开关 -->
+              <template v-if="form.distributionMode === 'total'">
+                <el-form-item label="鲁棒性/输入质量类">
+                  <el-switch 
+                    v-model="form.enableRobustnessInputQuality"
+                    active-text="启用"
+                    inactive-text="禁用"
+                  />
+                  <div class="form-help">控制错别字、意图模糊、指代消解等问题生成</div>
+                </el-form-item>
+                
+                <el-form-item label="合规与安全类">
+                  <el-switch 
+                    v-model="form.enableComplianceSafety"
+                    active-text="启用"
+                    inactive-text="禁用"
+                  />
+                  <div class="form-help">控制安全合规、隐私等风险问题生成</div>
+                </el-form-item>
+              </template>
+              
+              <!-- 人物画像JSON -->
+              <el-form-item label="人物画像JSON">
+                <el-input
+                  v-model="form.personaJson"
+                  type="textarea"
+                  :rows="6"
+                  placeholder="请输入人物画像JSON配置，格式示例：
 [
   {&quot;name&quot;: &quot;新手客户&quot;, &quot;description&quot;: &quot;刚接触保险产品，对基本概念不了解的新用户&quot;},
   {&quot;name&quot;: &quot;资深代理人&quot;, &quot;description&quot;: &quot;有多年代理经验，熟悉各类保险产品和条款&quot;}
 ]"
-              />
-              <div class="form-help">定义用户角色，帮助生成更真实的问题</div>
-            </el-form-item>
+                />
+                <div class="form-help">定义用户角色，帮助生成更真实的问题</div>
+              </el-form-item>
+            </template>
+
+            <template v-else>
+              <el-form-item label="Case 数量">
+                <el-input-number
+                  v-model="form.numCases"
+                  :min="1"
+                  :max="50"
+                  style="width: 100%;"
+                />
+              </el-form-item>
+              <el-form-item label="每 Case 轮数范围">
+                <div class="conversation-slider-wrapper">
+                  <el-slider
+                    v-model="form.turnRange"
+                    range
+                    :min="3"
+                    :max="5"
+                    :step="1"
+                    show-stops
+                    style="width: 100%;"
+                  />
+                  <div class="form-help">当前范围：{{ form.turnRange[0] }} - {{ form.turnRange[1] }} 轮</div>
+                </div>
+              </el-form-item>
+              <el-form-item label="Case 类型比例">
+                <div class="conversation-ratio-grid">
+                  <div class="ratio-item">
+                    <div class="ratio-label">单切片深挖</div>
+                    <el-input-number
+                      v-model="form.caseTypeRatioPercent.single_chunk_deep"
+                      :min="0"
+                      :max="100"
+                      :precision="1"
+                      :step="1"
+                      style="width: 100%;"
+                      @change="normalizeCaseTypeRatioInputs('single_chunk_deep')"
+                    />
+                  </div>
+                  <div class="ratio-item">
+                    <div class="ratio-label">同文档切片链</div>
+                    <el-input-number
+                      v-model="form.caseTypeRatioPercent.same_doc_chain"
+                      :min="0"
+                      :max="100"
+                      :precision="1"
+                      :step="1"
+                      style="width: 100%;"
+                      @change="normalizeCaseTypeRatioInputs('same_doc_chain')"
+                    />
+                  </div>
+                  <div class="ratio-item">
+                    <div class="ratio-label">跨文档关联</div>
+                    <el-input-number
+                      v-model="form.caseTypeRatioPercent.cross_doc_assoc"
+                      :min="0"
+                      :max="100"
+                      :precision="1"
+                      :step="1"
+                      style="width: 100%;"
+                      @change="normalizeCaseTypeRatioInputs('cross_doc_assoc')"
+                    />
+                  </div>
+                </div>
+                <div class="form-help">输入后会自动归一化，当前总和：{{ normalizedRatioTotal }}%</div>
+              </el-form-item>
+            </template>
 
             <!-- 操作按钮 -->
             <el-form-item class="mt-20">
@@ -93,7 +189,12 @@
                 :disabled="form.documentIds.length === 0"
                 style="width: 100%;"
               >
-                {{ generating ? `生成中... (${progressInfo.current}/${progressInfo.total})` : '开始生成测试集' }}
+                {{ generateButtonText }}
+              </el-button>
+            </el-form-item>
+            <el-form-item v-if="generationFailed" class="mt-10">
+              <el-button type="success" plain style="width: 100%;" @click="resumeGeneration">
+                继续生成（断点续传）
               </el-button>
             </el-form-item>
             <el-form-item v-if="generationFailed" class="mt-10">
@@ -165,11 +266,11 @@
       <!-- 下方：生成进度和结果 -->
       <el-col :span="24" class="mt-20">
         <!-- 生成进度 -->
-        <el-card v-if="generating || generatedQuestions.length > 0" class="progress-card">
+        <el-card v-if="generating || generatedItemCount > 0" class="progress-card">
           <template #header>
             <div class="card-header">
               <span>生成进度</span>
-              <el-button v-if="generatedQuestions.length > 0" text @click="exportCSV">
+              <el-button v-if="!isConversationResultMode && generatedQuestions.length > 0" text @click="exportCSV">
                 导出CSV
               </el-button>
             </div>
@@ -201,20 +302,20 @@
           <div v-if="!generating && progressInfo.logs.length > 0" class="result-stats">
             <el-row :gutter="10">
               <el-col :span="8">
-                <el-statistic title="总问题数" :value="generatedQuestions.length" />
+                <el-statistic :title="generatedItemStatTitle" :value="generatedItemCount" />
               </el-col>
               <el-col :span="8">
                 <el-statistic title="来源文档数" :value="form.documentIds.length" />
               </el-col>
               <el-col :span="8">
-                <el-statistic title="状态" :value="generatedQuestions.length > 0 ? '已完成' : '生成失败'" />
+                <el-statistic title="状态" :value="generatedItemCount > 0 ? '已完成' : '生成失败'" />
               </el-col>
             </el-row>
           </div>
         </el-card>
         
         <!-- 生成结果表格 -->
-        <el-card v-if="generatedQuestions.length > 0" class="result-card mt-20">
+        <el-card v-if="!isConversationResultMode && generatedQuestions.length > 0" class="result-card mt-20">
           <template #header>
             <div class="card-header">
               <span>生成结果</span>
@@ -258,7 +359,7 @@
         </el-card>
         
         <!-- 空状态 -->
-        <el-card v-if="!generating && generatedQuestions.length === 0 && progressInfo.logs.length === 0" class="empty-card">
+        <el-card v-if="!generating && generatedItemCount === 0 && progressInfo.logs.length === 0" class="empty-card">
           <el-empty description="请选择文档并配置参数，然后点击生成测试集">
             <template #image>
               <el-icon :size="60"><DocumentAdd /></el-icon>
@@ -313,19 +414,17 @@
     >
       <div class="document-picker-content">
         <div class="picker-toolbar">
-          <el-select
-            v-model="pickerSelectedCategory"
-            placeholder="按分类选择"
+          <el-cascader
+            v-model="pickerSelectedCategories"
+            :options="categoryTree"
+            placeholder="按分类选择（可多选）"
             clearable
-            style="width: 240px;"
-          >
-            <el-option
-              v-for="category in documentCategories"
-              :key="category"
-              :label="`${category}（${categoryDocCountMap[category] || 0}）`"
-              :value="category"
-            />
-          </el-select>
+            filterable
+            collapse-tags
+            collapse-tags-tooltip
+            style="width: 300px;"
+            :props="{ expandTrigger: 'hover', checkStrictly: true, multiple: true }"
+          />
           <el-button @click="selectPickerDocumentsByCategory(false)">追加该分类</el-button>
           <el-button type="primary" plain @click="selectPickerDocumentsByCategory(true)">仅选该分类</el-button>
           <el-button text @click="clearPickerDocumentSelection">清空已选</el-button>
@@ -354,12 +453,18 @@ import { ref, reactive, computed, onMounted, onUnmounted, onActivated } from 'vu
 import { useRoute, useRouter } from 'vue-router'
 import { ElMessage, ElNotification } from 'element-plus'
 import { testsetApi } from '@/api/testsets'
+import { taskApi } from '@/api/tasks'
 import { documentApi } from '@/api/documents'
 import { useTaskStore } from '@/stores/task'
+import { getLocalStorage, removeLocalStorage, setLocalStorage } from '@/utils/storage'
+import { useCategoryHierarchy } from '@/composables/useCategoryHierarchy'
 
 const router = useRouter()
 const route = useRoute()
 const taskStore = useTaskStore()
+const { categoryTree } = useCategoryHierarchy()
+const GENERATION_SESSION_STORAGE_KEY = 'testset_generation_session'
+const GENERATION_SESSION_MAX_AGE_MS = 12 * 60 * 60 * 1000
 
 const buildLocalNameStamp = () => {
   const now = new Date()
@@ -367,11 +472,46 @@ const buildLocalNameStamp = () => {
   return `${now.getFullYear()}-${pad(now.getMonth() + 1)}-${pad(now.getDate())}_${pad(now.getHours())}-${pad(now.getMinutes())}-${pad(now.getSeconds())}`
 }
 
+type GenerationPayload = {
+  name: string
+  documentIds: string[]
+  generationMode: 'single_turn' | 'multi_turn'
+  distributionMode: 'per_doc' | 'total'
+  questionsPerDoc: number
+  numTotalQuestions: number
+  numCases: number
+  turnRange: [number, number]
+  caseTypeRatio: {
+    single_chunk_deep: number
+    same_doc_chain: number
+    cross_doc_assoc: number
+  }
+  enableSafetyRobustness: boolean
+  personaJson: string
+}
+
+type SavedGenerationSession = {
+  taskId: string
+  createdTestsetId: string
+  payload: GenerationPayload
+  savedAt: number
+}
+
 // 表单数据
 const form = reactive({
   name: `测试集_${buildLocalNameStamp()}`,
   documentIds: [] as string[],
-  questionsPerDoc: 10,
+  generationMode: 'single_turn' as 'single_turn' | 'multi_turn',
+  distributionMode: 'per_doc' as 'per_doc' | 'total',
+  questionsPerDoc: 5,
+  numTotalQuestions: 10,
+  numCases: 5,
+  turnRange: [3, 5] as [number, number],
+  caseTypeRatioPercent: {
+    single_chunk_deep: 20,
+    same_doc_chain: 60,
+    cross_doc_assoc: 20
+  },
   enableRobustnessInputQuality: false,
   enableComplianceSafety: false,
   personaJson: ''
@@ -385,13 +525,25 @@ const generating = ref(false)
 const generationFailed = ref(false)
 const createdTestsetId = ref<string | null>(null)
 const generatedQuestions = ref<any[]>([])
+const generatedConversationCaseCount = ref(0)
+const resultMode = ref<'single_turn' | 'multi_turn'>('single_turn')
 const filterText = ref('')
 const initialLoading = ref(false)
 const documents = ref<any[]>([])
 const lastSubmitPayload = ref<null | {
   name: string
   documentIds: string[]
+  generationMode: 'single_turn' | 'multi_turn'
+  distributionMode: 'per_doc' | 'total'
   questionsPerDoc: number
+  numTotalQuestions: number
+  numCases: number
+  turnRange: [number, number]
+  caseTypeRatio: {
+    single_chunk_deep: number
+    same_doc_chain: number
+    cross_doc_assoc: number
+  }
   enableSafetyRobustness: boolean
   personaJson: string
 }>(null)
@@ -405,6 +557,25 @@ const progressInfo = reactive({
   logs: [] as string[]
 })
 
+const isConversationMode = computed(() => form.generationMode === 'multi_turn')
+const isConversationResultMode = computed(() => resultMode.value === 'multi_turn')
+
+const generatedItemCount = computed(() =>
+  isConversationResultMode.value ? generatedConversationCaseCount.value : generatedQuestions.value.length
+)
+
+const generatedItemStatTitle = computed(() =>
+  isConversationResultMode.value ? '总 Case 数' : '总问题数'
+)
+
+const generateButtonText = computed(() => {
+  if (!generating.value) return '开始生成测试集'
+  if (isConversationMode.value) {
+    return `生成中... (${progressInfo.current}/${progressInfo.total} Case)`
+  }
+  return `生成中... (${progressInfo.current}/${progressInfo.total})`
+})
+
 // 进度百分比
 const progressPercentage = computed(() => {
   if (progressInfo.total === 0) return 0
@@ -414,8 +585,8 @@ const progressPercentage = computed(() => {
 // 进度状态
 const progressStatus = computed(() => {
   if (generationFailed.value) return 'exception'
-  if (!generating.value && generatedQuestions.value.length === 0 && progressInfo.logs.length > 0) return 'exception'
-  if (progressPercentage.value >= 100 && generatedQuestions.value.length > 0) return 'success'
+  if (!generating.value && generatedItemCount.value === 0 && progressInfo.logs.length > 0) return 'exception'
+  if (progressPercentage.value >= 100 && generatedItemCount.value > 0) return 'success'
   if (progressPercentage.value > 0) return ''
   return 'exception'
 })
@@ -424,7 +595,14 @@ const generationSucceeded = computed(() =>
   !generating.value &&
   !generationFailed.value &&
   !!createdTestsetId.value &&
-  generatedQuestions.value.length > 0
+  generatedItemCount.value > 0
+)
+
+const hasInMemoryGenerationState = computed(() =>
+  generating.value ||
+  !!createdTestsetId.value ||
+  generatedItemCount.value > 0 ||
+  progressInfo.logs.length > 0
 )
 
 // 过滤后的问题
@@ -440,7 +618,7 @@ const filteredQuestions = computed(() => {
 
 // 已分析的文档
 const analyzedDocuments = computed(() =>
-  documents.value.filter((doc: any) => doc.is_analyzed)
+  documents.value.filter((doc: any) => doc.is_analyzed && doc.status === 'active')
 )
 const transferData = computed(() =>
   analyzedDocuments.value.map((doc: any) => {
@@ -457,7 +635,7 @@ const transferFilterMethod = (query: string, item: { label: string }) => {
 }
 const documentPickerVisible = ref(false)
 const tempDocumentIds = ref<string[]>([])
-const pickerSelectedCategory = ref('')
+const pickerSelectedCategories = ref<string[][]>([])
 const documentNameMap = computed<Record<string, string>>(() => {
   const map: Record<string, string> = {}
   for (const doc of analyzedDocuments.value) {
@@ -475,7 +653,7 @@ const selectedDocumentPreviewText = computed(() => {
 })
 const openDocumentPicker = () => {
   tempDocumentIds.value = [...form.documentIds]
-  pickerSelectedCategory.value = ''
+  pickerSelectedCategories.value = []
   documentPickerVisible.value = true
 }
 const confirmDocumentPicker = () => {
@@ -483,36 +661,30 @@ const confirmDocumentPicker = () => {
   documentPickerVisible.value = false
 }
 const cancelDocumentPicker = () => {
-  pickerSelectedCategory.value = ''
+  pickerSelectedCategories.value = []
   documentPickerVisible.value = false
 }
 const normalizeCategory = (doc: any) => String(doc?.category || '').trim() || '未分类'
-const documentCategories = computed(() => {
-  const set = new Set<string>()
-  for (const doc of analyzedDocuments.value) {
-    set.add(normalizeCategory(doc))
-  }
-  return Array.from(set).sort((a, b) => a.localeCompare(b, 'zh-CN'))
-})
-const categoryDocCountMap = computed<Record<string, number>>(() => {
-  const map: Record<string, number> = {}
-  for (const doc of analyzedDocuments.value) {
-    const category = normalizeCategory(doc)
-    map[category] = (map[category] || 0) + 1
-  }
-  return map
-})
 
 const selectPickerDocumentsByCategory = (replaceSelection: boolean) => {
-  if (!pickerSelectedCategory.value) {
+  if (!pickerSelectedCategories.value || pickerSelectedCategories.value.length === 0) {
     ElMessage.warning('请先选择文档分类')
     return
   }
+  
+  const categoryPaths = pickerSelectedCategories.value.map(path => path.join('/'))
+  
   const targetIds = analyzedDocuments.value
-    .filter(doc => normalizeCategory(doc) === pickerSelectedCategory.value)
+    .filter(doc => {
+      const docCategory = normalizeCategory(doc)
+      return categoryPaths.some(catPath => 
+        docCategory === catPath || docCategory.startsWith(catPath + '/')
+      )
+    })
     .map(doc => doc.id)
+  
   if (targetIds.length === 0) {
-    ElMessage.warning(`分类“${pickerSelectedCategory.value}”下没有可用文档`)
+    ElMessage.warning('所选分类下没有可用文档')
     return
   }
 
@@ -521,12 +693,55 @@ const selectPickerDocumentsByCategory = (replaceSelection: boolean) => {
   } else {
     tempDocumentIds.value = Array.from(new Set([...tempDocumentIds.value, ...targetIds]))
   }
-  ElMessage.success(`已选中分类“${pickerSelectedCategory.value}”下 ${targetIds.length} 个文档`)
+  ElMessage.success(`已选中 ${categoryPaths.length} 个分类下共 ${targetIds.length} 个文档`)
 }
 
 const clearPickerDocumentSelection = () => {
   tempDocumentIds.value = []
 }
+
+const normalizeCaseTypeRatioInputs = (
+  preferredKey?: 'single_chunk_deep' | 'same_doc_chain' | 'cross_doc_assoc'
+) => {
+  const source = form.caseTypeRatioPercent
+  const entries = [
+    ['single_chunk_deep', Number(source.single_chunk_deep || 0)],
+    ['same_doc_chain', Number(source.same_doc_chain || 0)],
+    ['cross_doc_assoc', Number(source.cross_doc_assoc || 0)]
+  ] as Array<['single_chunk_deep' | 'same_doc_chain' | 'cross_doc_assoc', number]>
+  const total = entries.reduce((sum, [, value]) => sum + Math.max(value, 0), 0)
+
+  if (total <= 0) {
+    source.single_chunk_deep = 20
+    source.same_doc_chain = 60
+    source.cross_doc_assoc = 20
+    return
+  }
+
+  const normalized = Object.fromEntries(
+    entries.map(([key, value]) => [key, Number(((Math.max(value, 0) / total) * 100).toFixed(1))])
+  ) as Record<'single_chunk_deep' | 'same_doc_chain' | 'cross_doc_assoc', number>
+
+  const keys = ['single_chunk_deep', 'same_doc_chain', 'cross_doc_assoc'] as const
+  const normalizedTotal = keys.reduce((sum, key) => sum + normalized[key], 0)
+  const diff = Number((100 - normalizedTotal).toFixed(1))
+  const targetKey = preferredKey || 'same_doc_chain'
+  normalized[targetKey] = Number((normalized[targetKey] + diff).toFixed(1))
+
+  source.single_chunk_deep = normalized.single_chunk_deep
+  source.same_doc_chain = normalized.same_doc_chain
+  source.cross_doc_assoc = normalized.cross_doc_assoc
+}
+
+const normalizedRatioTotal = computed(() =>
+  Number(
+    (
+      form.caseTypeRatioPercent.single_chunk_deep
+      + form.caseTypeRatioPercent.same_doc_chain
+      + form.caseTypeRatioPercent.cross_doc_assoc
+    ).toFixed(1)
+  )
+)
 
 // 详情对话框
 const detailDialogVisible = ref(false)
@@ -551,6 +766,58 @@ const loadTaxonomy = async () => {
 }
 
 // 生成测试集
+const saveGenerationSession = (taskId: string, payload: GenerationPayload, testsetId: string) => {
+  setLocalStorage<SavedGenerationSession>(GENERATION_SESSION_STORAGE_KEY, {
+    taskId,
+    createdTestsetId: testsetId,
+    payload,
+    savedAt: Date.now()
+  })
+}
+
+const clearGenerationSession = () => {
+  removeLocalStorage(GENERATION_SESSION_STORAGE_KEY)
+}
+
+const getSavedGenerationSession = (): SavedGenerationSession | null => {
+  const session = getLocalStorage<SavedGenerationSession>(GENERATION_SESSION_STORAGE_KEY)
+  if (!session) return null
+  if (!session.taskId || !session.createdTestsetId || !session.payload || !session.savedAt) {
+    clearGenerationSession()
+    return null
+  }
+  if (Date.now() - Number(session.savedAt) > GENERATION_SESSION_MAX_AGE_MS) {
+    clearGenerationSession()
+    return null
+  }
+  return session
+}
+
+const applySavedPayloadToForm = (payload: GenerationPayload) => {
+  form.name = payload.name
+  form.documentIds = [...payload.documentIds]
+  form.generationMode = payload.generationMode
+  form.questionsPerDoc = payload.questionsPerDoc
+  form.numCases = payload.numCases
+  form.turnRange = [...payload.turnRange] as [number, number]
+  form.caseTypeRatioPercent.single_chunk_deep = Number((payload.caseTypeRatio.single_chunk_deep * 100).toFixed(1))
+  form.caseTypeRatioPercent.same_doc_chain = Number((payload.caseTypeRatio.same_doc_chain * 100).toFixed(1))
+  form.caseTypeRatioPercent.cross_doc_assoc = Number((payload.caseTypeRatio.cross_doc_assoc * 100).toFixed(1))
+  form.enableRobustnessInputQuality = payload.enableSafetyRobustness
+  form.enableComplianceSafety = false
+  form.personaJson = payload.personaJson
+  resultMode.value = payload.generationMode
+  lastSubmitPayload.value = payload
+}
+
+const getExpectedTotalFromPayload = (payload: GenerationPayload) => (
+  payload.generationMode === 'multi_turn'
+    ? payload.numCases
+    : payload.distributionMode === 'per_doc'
+      ? payload.documentIds.length * payload.questionsPerDoc
+      : payload.numTotalQuestions
+)
+
 const stopPolling = () => {
   if (pollingTimer) {
     window.clearInterval(pollingTimer)
@@ -573,21 +840,56 @@ const cleanupCreatedTestset = async (message?: string) => {
   }
 }
 
-const pollTaskStatus = (taskId: string) => {
-  let lastLogIndex = 0
+const syncTaskStoreStatus = (taskId: string, task: any, taskName: string, targetId: string) => {
+  const statusMap: Record<string, 'pending' | 'running' | 'cancelling' | 'cancelled' | 'completed' | 'failed'> = {
+    pending: 'pending',
+    running: 'running',
+    cancelling: 'cancelling',
+    cancelled: 'cancelled',
+    finished: 'completed',
+    failed: 'failed'
+  }
+  taskStore.addTask({
+    id: taskId,
+    name: taskName,
+    type: 'testset',
+    progress: Math.round(Number(task.progress || 0) * 100),
+    status: statusMap[task.status] || 'running',
+    targetId
+  })
+}
+
+const pollTaskStatus = (taskId: string, initialLogIndex = 0) => {
+  let lastLogIndex = initialLogIndex
   const poll = async () => {
     try {
       const task = await testsetApi.getTaskStatus(taskId)
-      progressInfo.stage = task.message || task.status
+      const taskName = `${resultMode.value === 'multi_turn' ? '生成多轮测试集' : '生成测试集'}: ${form.name}`
+      const contextInfo = (task.contextInfo || task.context_info || {}) as Record<string, any>
+      const totalCases = Number(contextInfo.totalCases ?? contextInfo.total_cases ?? 0)
+      const currentCase = Number(contextInfo.currentCase ?? contextInfo.current_case ?? 0)
+      const currentTurn = Number(contextInfo.currentTurn ?? contextInfo.current_turn ?? 0)
 
-      if (typeof task.total_steps === 'number' && task.total_steps > 0) {
+      if (isConversationMode.value && totalCases > 0) {
+        progressInfo.stage = currentCase > 0
+          ? `正在生成 Case ${currentCase}/${totalCases}${currentTurn > 0 ? `，Turn ${currentTurn}...` : '...'}`
+          : (task.message || task.status)
+        progressInfo.total = totalCases
+        if (currentCase > 0) {
+          progressInfo.current = Math.max(progressInfo.current, currentCase)
+        }
+      } else {
+        progressInfo.stage = task.message || task.status
+      }
+
+      if (!isConversationMode.value && typeof task.total_steps === 'number' && task.total_steps > 0) {
         progressInfo.total = task.total_steps
       }
-      if (typeof task.current_step === 'number') {
+      if (!isConversationMode.value && typeof task.current_step === 'number') {
         progressInfo.current = Math.max(progressInfo.current, task.current_step)
       }
 
-      if (typeof task.progress === 'number' && progressInfo.total > 0) {
+      if (!isConversationMode.value && typeof task.progress === 'number' && progressInfo.total > 0) {
         const currentByProgress = Math.round(task.progress * progressInfo.total)
         if (currentByProgress > progressInfo.current) {
           progressInfo.current = currentByProgress
@@ -595,6 +897,7 @@ const pollTaskStatus = (taskId: string) => {
       }
 
       // 更新全局任务状态
+      syncTaskStoreStatus(taskId, task, taskName, createdTestsetId.value || '')
       taskStore.updateTask(taskId, {
         progress: progressPercentage.value,
         status: 'running',
@@ -615,18 +918,21 @@ const pollTaskStatus = (taskId: string) => {
         stopPolling()
         generating.value = false
         generatedQuestions.value = task.result?.questions || []
-        progressInfo.current = progressInfo.total
+        generatedConversationCaseCount.value = Number(
+          task.result?.generated_case_count
+          || (Array.isArray(task.result?.generated_case_ids) ? task.result.generated_case_ids.length : 0)
+          || 0
+        )
+        progressInfo.current = progressInfo.total || generatedItemCount.value
         progressInfo.stage = '生成完成'
-        
-        // 更新全局任务为完成
-        taskStore.updateTask(taskId, {
-          progress: 100,
-          status: 'completed'
-        })
+        syncTaskStoreStatus(taskId, task, taskName, createdTestsetId.value || '')
+        taskStore.updateTask(taskId, { progress: 100, status: 'completed' })
 
         ElNotification({
           title: '生成成功',
-          message: `已生成 ${generatedQuestions.value.length} 个问题，请点击“查看测试集详情”继续`,
+          message: isConversationResultMode.value
+            ? `已生成 ${generatedConversationCaseCount.value} 个多轮 Case，请点击“查看测试集详情”继续`
+            : `已生成 ${generatedQuestions.value.length} 个问题，请点击“查看测试集详情”继续`,
           type: 'success'
         })
         return
@@ -637,12 +943,21 @@ const pollTaskStatus = (taskId: string) => {
         generating.value = false
         generationFailed.value = true
         progressInfo.stage = '生成已取消'
-        taskStore.removeTask(taskId)
+        syncTaskStoreStatus(taskId, task, taskName, createdTestsetId.value || '')
         progressInfo.logs.push(task.message || '任务已取消')
-        await cleanupCreatedTestset('已删除已取消任务创建的测试集')
+        // 断点续传场景：如果已有部分问题生成，保留测试集以便后续续传
+        const contextInfo = (task.contextInfo || task.context_info || {}) as Record<string, any>
+        const hasGenerated = Number(contextInfo.generated_count ?? 0) > 0
+        if (!hasGenerated) {
+          await cleanupCreatedTestset('已删除已取消任务创建的测试集')
+        } else {
+          progressInfo.logs.push(`已生成 ${contextInfo.generated_count} 个问题，可点击"继续生成（断点续传）"恢复`)
+        }
         ElNotification({
           title: '任务已取消',
-          message: task.message || '测试集生成已取消',
+          message: hasGenerated
+            ? `已部分生成 ${contextInfo.generated_count} 个问题，可点击"继续生成（断点续传）"恢复`
+            : (task.message || '测试集生成已取消'),
           type: 'warning'
         })
         return
@@ -653,15 +968,23 @@ const pollTaskStatus = (taskId: string) => {
         generating.value = false
         generationFailed.value = true
         progressInfo.stage = '生成失败'
-        
-        taskStore.removeTask(taskId)
+        syncTaskStoreStatus(taskId, task, taskName, createdTestsetId.value || '')
 
         const err = task.error || '未知错误'
         progressInfo.logs.push(`错误: ${err}`)
-        await cleanupCreatedTestset('已删除失败任务创建的测试集')
+        // 断点续传场景：如果已有部分问题生成，保留测试集以便后续续传
+        const contextInfo = (task.contextInfo || task.context_info || {}) as Record<string, any>
+        const hasGenerated = Number(contextInfo.generated_count ?? 0) > 0
+        if (!hasGenerated) {
+          await cleanupCreatedTestset('已删除失败任务创建的测试集')
+        } else {
+          progressInfo.logs.push(`已生成 ${contextInfo.generated_count} 个问题，可点击"继续生成（断点续传）"恢复`)
+        }
         ElNotification({
           title: '生成失败',
-          message: `任务执行失败：${err}，可直接点击“使用上次参数重试”`,
+          message: hasGenerated
+            ? `任务失败，但已保存 ${contextInfo.generated_count} 个问题，可点击"继续生成（断点续传）"恢复`
+            : `任务执行失败：${err}，可直接点击"使用上次参数重试"`,
           type: 'error'
         })
       }
@@ -669,17 +992,16 @@ const pollTaskStatus = (taskId: string) => {
       stopPolling()
       generating.value = false
       generationFailed.value = true
-      progressInfo.stage = '生成失败'
-      
-      taskStore.removeTask(taskId)
+      progressInfo.stage = '轮询中断'
 
       const err = error?.response?.data?.detail || error?.message || '网络异常'
       progressInfo.logs.push(`轮询失败: ${err}`)
-      await cleanupCreatedTestset('已删除轮询失败任务创建的测试集')
+      progressInfo.logs.push('后端任务可能仍在运行，请刷新页面查看进度')
       ElNotification({
-        title: '网络异常',
-        message: `状态轮询失败：${err}，请重试`,
-        type: 'error'
+        title: '轮询中断',
+        message: `状态轮询失败：${err}。后端任务可能仍在运行，请刷新页面恢复进度。`,
+        type: 'warning',
+        duration: 10000
       })
     }
   }
@@ -688,47 +1010,141 @@ const pollTaskStatus = (taskId: string) => {
   pollingTimer = window.setInterval(poll, 2000)
 }
 
-const submitGeneration = async (payload: {
-  name: string
-  documentIds: string[]
-  questionsPerDoc: number
-  enableSafetyRobustness: boolean
-  personaJson: string
-}) => {
+const restoreGenerationSession = async () => {
+  const session = getSavedGenerationSession()
+  if (!session) return false
+
+  try {
+    const { taskId, createdTestsetId: savedTestsetId, payload } = session
+    const task = await testsetApi.getTaskStatus(taskId)
+
+    applySavedPayloadToForm(payload)
+    createdTestsetId.value = savedTestsetId
+    generatedQuestions.value = []
+    generatedConversationCaseCount.value = 0
+    generationFailed.value = false
+    progressInfo.total = getExpectedTotalFromPayload(payload)
+    progressInfo.current = 0
+    progressInfo.logs = task.logs ? [...task.logs] : []
+
+    if (payload.generationMode === 'multi_turn') {
+      const contextInfo = (task.contextInfo || task.context_info || {}) as Record<string, any>
+      const totalCases = Number(contextInfo.totalCases ?? contextInfo.total_cases ?? 0)
+      const currentCase = Number(contextInfo.currentCase ?? contextInfo.current_case ?? 0)
+      const currentTurn = Number(contextInfo.currentTurn ?? contextInfo.current_turn ?? 0)
+      progressInfo.total = totalCases > 0 ? totalCases : progressInfo.total
+      progressInfo.current = currentCase > 0 ? currentCase : progressInfo.current
+      progressInfo.stage = currentCase > 0
+        ? `正在生成 Case ${currentCase}/${progressInfo.total}${currentTurn > 0 ? `，Turn ${currentTurn}...` : '...'}`
+        : (task.message || '准备中')
+    } else {
+      if (typeof task.total_steps === 'number' && task.total_steps > 0) {
+        progressInfo.total = task.total_steps
+      }
+      if (typeof task.current_step === 'number') {
+        progressInfo.current = task.current_step
+      } else if (typeof task.progress === 'number' && progressInfo.total > 0) {
+        progressInfo.current = Math.round(task.progress * progressInfo.total)
+      }
+      progressInfo.stage = task.message || '准备中'
+    }
+
+    syncTaskStoreStatus(taskId, task, `${payload.generationMode === 'multi_turn' ? '生成多轮测试集' : '生成测试集'}: ${payload.name}`, savedTestsetId)
+
+    if (task.status === 'finished') {
+      generating.value = false
+      generatedQuestions.value = task.result?.questions || []
+      generatedConversationCaseCount.value = Number(
+        task.result?.generated_case_count
+        || (Array.isArray(task.result?.generated_case_ids) ? task.result.generated_case_ids.length : 0)
+        || 0
+      )
+      progressInfo.current = progressInfo.total || generatedItemCount.value
+      progressInfo.stage = '生成完成'
+      return true
+    }
+
+    if (task.status === 'failed' || task.status === 'cancelled') {
+      generating.value = false
+      generationFailed.value = true
+      progressInfo.stage = task.status === 'cancelled' ? '生成已取消' : '生成失败'
+      return true
+    }
+
+    generating.value = true
+    pollTaskStatus(taskId, task.logs?.length || 0)
+    ElMessage.success('已恢复测试集生成进度')
+    return true
+  } catch (error: any) {
+    clearGenerationSession()
+    console.error('恢复测试集生成会话失败:', error)
+    return false
+  }
+}
+
+const submitGeneration = async (payload: GenerationPayload) => {
+  clearGenerationSession()
   generating.value = true
+  resultMode.value = payload.generationMode
   generationFailed.value = false
   generatedQuestions.value = []
+  generatedConversationCaseCount.value = 0
   progressInfo.stage = '准备中'
   progressInfo.current = 0
-  progressInfo.total = payload.documentIds.length * payload.questionsPerDoc
+  progressInfo.total = payload.generationMode === 'multi_turn'
+    ? payload.numCases
+    : payload.distributionMode === 'per_doc'
+      ? payload.documentIds.length * payload.questionsPerDoc
+      : payload.numTotalQuestions
   progressInfo.logs = []
 
   try {
     let personaList: any[] = []
-    if (payload.personaJson) {
+    if (payload.generationMode !== 'multi_turn' && payload.personaJson) {
       personaList = JSON.parse(payload.personaJson)
     }
 
     const testSet = await testsetApi.createTestSet({
       document_id: payload.documentIds[0],
       name: payload.name,
-      description: `自动生成的测试集，包含${payload.questionsPerDoc}个问题/文档`
+      description: payload.generationMode === 'multi_turn'
+        ? `自动生成的多轮测试集，预计 ${payload.numCases} 个 Case`
+        : payload.distributionMode === 'per_doc'
+          ? `自动生成的测试集，每文档${payload.questionsPerDoc}题`
+          : `自动生成的测试集，共${payload.numTotalQuestions}题`
     })
     createdTestsetId.value = testSet.id
     progressInfo.stage = '开始生成'
-    progressInfo.logs.push('创建测试集成功，开始异步生成问题...')
+    progressInfo.logs.push(
+      payload.generationMode === 'multi_turn'
+        ? '创建测试集成功，开始异步生成多轮 Case...'
+        : '创建测试集成功，开始异步生成问题...'
+    )
 
-    const { task_id } = await testsetApi.generateQuestionsAsync(testSet.id, {
-      num_questions: payload.questionsPerDoc * payload.documentIds.length,
-      generation_mode: 'advanced',
-      enable_safety_robustness: payload.enableSafetyRobustness,
-      document_ids: payload.documentIds,
-      persona_list: personaList
-    })
+    const taskResponse = payload.generationMode === 'multi_turn'
+      ? await testsetApi.generateConversationQuestions(testSet.id, {
+          num_cases: payload.numCases,
+          turn_range: payload.turnRange,
+          case_type_ratio: payload.caseTypeRatio,
+          document_ids: payload.documentIds
+        })
+      : await testsetApi.generateQuestionsAsync(testSet.id, {
+          num_questions: payload.distributionMode === 'per_doc'
+            ? payload.questionsPerDoc * payload.documentIds.length
+            : payload.numTotalQuestions,
+          generation_mode: 'advanced',
+          enable_safety_robustness: payload.enableSafetyRobustness,
+          document_ids: payload.documentIds,
+          persona_list: personaList,
+          distribution_mode: payload.distributionMode,
+          questions_per_doc: payload.distributionMode === 'per_doc' ? payload.questionsPerDoc : undefined,
+        })
+    const { task_id } = taskResponse
+    saveGenerationSession(task_id, payload, testSet.id)
     
     taskStore.addTask({
       id: task_id,
-      name: `生成测试集: ${payload.name}`,
+      name: `${payload.generationMode === 'multi_turn' ? '生成多轮测试集' : '生成测试集'}: ${payload.name}`,
       type: 'testset',
       progress: 0,
       status: 'running',
@@ -753,7 +1169,7 @@ const handleGenerate = async () => {
     ElMessage.warning('请至少选择一个文档')
     return
   }
-  if (form.personaJson.trim()) {
+  if (!isConversationMode.value && form.personaJson.trim()) {
     try {
       JSON.parse(form.personaJson)
     } catch {
@@ -765,9 +1181,19 @@ const handleGenerate = async () => {
   const payload = {
     name,
     documentIds: [...form.documentIds],
+    generationMode: form.generationMode,
+    distributionMode: form.distributionMode,
     questionsPerDoc: form.questionsPerDoc,
+    numTotalQuestions: form.numTotalQuestions,
+    numCases: form.numCases,
+    turnRange: [...form.turnRange] as [number, number],
+    caseTypeRatio: {
+      single_chunk_deep: Number((form.caseTypeRatioPercent.single_chunk_deep / 100).toFixed(4)),
+      same_doc_chain: Number((form.caseTypeRatioPercent.same_doc_chain / 100).toFixed(4)),
+      cross_doc_assoc: Number((form.caseTypeRatioPercent.cross_doc_assoc / 100).toFixed(4))
+    },
     enableSafetyRobustness: form.enableRobustnessInputQuality || form.enableComplianceSafety,
-    personaJson: form.personaJson.trim()
+    personaJson: isConversationMode.value ? '' : form.personaJson.trim()
   }
   lastSubmitPayload.value = payload
 
@@ -804,16 +1230,71 @@ const retryLastSubmit = async () => {
   }
 }
 
-const resetGenerationPage = () => {
+const resumeGeneration = async () => {
+  const session = getSavedGenerationSession()
+  if (!session) {
+    ElMessage.warning('未找到可续传的任务会话，请使用"使用上次参数重试"重新生成')
+    return
+  }
+
+  const { taskId, createdTestsetId: savedTestsetId, payload } = session
+
+  try {
+    // 调用后端断点续传接口
+    const result = await taskApi.resumeTask(taskId)
+
+    // 恢复前端状态
+    applySavedPayloadToForm(payload)
+    createdTestsetId.value = savedTestsetId
+    resultMode.value = payload.generationMode
+    generating.value = true
+    generationFailed.value = false
+    generatedQuestions.value = []
+    generatedConversationCaseCount.value = 0
+    progressInfo.total = getExpectedTotalFromPayload(payload)
+    progressInfo.stage = result.message || '断点续传中...'
+    progressInfo.logs.push(`断点续传: 任务 ${taskId} 已恢复`)
+
+    // 更新全局任务栏
+    taskStore.updateTask(taskId, {
+      status: 'pending',
+      progress: Math.round((result.progress || 0) * 100),
+      message: result.message,
+      error: undefined
+    })
+
+    // 开始轮询
+    pollTaskStatus(taskId)
+
+    ElMessage.success('已从断点继续生成')
+  } catch (error: any) {
+    const err = error?.response?.data?.detail || error?.message || '未知错误'
+    ElNotification({
+      title: '续传失败',
+      message: `无法从断点续传：${err}，可使用"使用上次参数重试"重新生成`,
+      type: 'error'
+    })
+  }
+}
+
+const resetGenerationPage = (options?: { preserveSession?: boolean }) => {
   stopPolling()
   generating.value = false
   generationFailed.value = false
   createdTestsetId.value = null
   generatedQuestions.value = []
+  generatedConversationCaseCount.value = 0
+  resultMode.value = 'single_turn'
   lastSubmitPayload.value = null
   form.name = `测试集_${buildLocalNameStamp()}`
   form.documentIds = []
+  form.generationMode = 'single_turn'
   form.questionsPerDoc = 10
+  form.numCases = 5
+  form.turnRange = [3, 5]
+  form.caseTypeRatioPercent.single_chunk_deep = 20
+  form.caseTypeRatioPercent.same_doc_chain = 60
+  form.caseTypeRatioPercent.cross_doc_assoc = 20
   form.enableRobustnessInputQuality = false
   form.enableComplianceSafety = false
   form.personaJson = ''
@@ -822,8 +1303,11 @@ const resetGenerationPage = () => {
   progressInfo.total = 0
   progressInfo.logs = []
   filterText.value = ''
-  pickerSelectedCategory.value = ''
+  pickerSelectedCategories.value = []
   tempDocumentIds.value = []
+  if (!options?.preserveSession) {
+    clearGenerationSession()
+  }
 }
 
 const applyRouteQuery = () => {
@@ -858,20 +1342,75 @@ const exportCSV = () => {
     return
   }
   
-  // 构建CSV内容
-  const headers = ['问题', '预期答案', '问题类型', '主要分类', '次要分类', '上下文']
-  const rows = generatedQuestions.value.map(q => [
-    `"${(q.question || '').replace(/"/g, '""')}"`,
-    `"${((q.expected_answer || q.ground_truth) || '').replace(/"/g, '""')}"`,
-    `"${(q.question_type || '').replace(/"/g, '""')}"`,
-    `"${(q.category_major || '').replace(/"/g, '""')}"`,
-    `"${(q.category_minor || '').replace(/"/g, '""')}"`,
-    `"${(q.context || '').replace(/"/g, '""')}"`
-  ])
+  const docCategoryMap: Record<string, string> = {}
+  for (const doc of documents.value) {
+    docCategoryMap[doc.id] = doc.category || '未分类'
+  }
+  
+  const parseCategoryLevels = (category: string): [string, string, string] => {
+    if (!category || category === '未分类') return ['', '', '']
+    const parts = category.split('/')
+    if (parts.length >= 3) return [parts[0], parts[1], parts[2]]
+    if (parts.length === 2) return [parts[0], parts[1], '']
+    if (parts.length === 1) return [parts[0], '', '']
+    return ['', '', '']
+  }
+  
+  const getSourceDocument = (q: any): string => {
+    const meta = q.metadata || {}
+    const docIds = meta.doc_ids || meta.document_ids || []
+    if (Array.isArray(docIds)) {
+      for (const did of docIds) {
+        const doc = documents.value.find(d => d.id === did)
+        if (doc) return doc.filename || ''
+      }
+    }
+    if (meta.doc_id) {
+      const doc = documents.value.find(d => d.id === meta.doc_id)
+      if (doc) return doc.filename || ''
+    }
+    if (meta.filename) return meta.filename
+    if (meta.filenames && Array.isArray(meta.filenames)) return meta.filenames.join(' | ')
+    return ''
+  }
+  
+  const getCategoryForQuestion = (q: any): [string, string, string] => {
+    const meta = q.metadata || {}
+    const docIds = meta.doc_ids || meta.document_ids || []
+    const ids = Array.isArray(docIds) ? docIds : []
+    if (meta.doc_id) ids.push(meta.doc_id)
+    for (const did of ids) {
+      if (docCategoryMap[did]) return parseCategoryLevels(docCategoryMap[did])
+    }
+    if (form.documentIds.length > 0) {
+      for (const did of form.documentIds) {
+        if (docCategoryMap[did]) return parseCategoryLevels(docCategoryMap[did])
+      }
+    }
+    return ['', '', '']
+  }
+  
+  const headers = ['问题ID', '一级分类', '二级分类', '三级分类', '来源文档', '问题', '预期答案', '问题类型', '主要分类', '次要分类', '上下文']
+  const rows = generatedQuestions.value.map(q => {
+    const [level1, level2, level3] = getCategoryForQuestion(q)
+    const sourceDoc = getSourceDocument(q)
+    return [
+      `"${(q.id || '').replace(/"/g, '""')}"`,
+      `"${level1.replace(/"/g, '""')}"`,
+      `"${level2.replace(/"/g, '""')}"`,
+      `"${level3.replace(/"/g, '""')}"`,
+      `"${sourceDoc.replace(/"/g, '""')}"`,
+      `"${(q.question || '').replace(/"/g, '""')}"`,
+      `"${((q.expected_answer || q.ground_truth) || '').replace(/"/g, '""')}"`,
+      `"${(q.question_type || '').replace(/"/g, '""')}"`,
+      `"${(q.category_major || '').replace(/"/g, '""')}"`,
+      `"${(q.category_minor || '').replace(/"/g, '""')}"`,
+      `"${(q.context || '').replace(/"/g, '""')}"`
+    ]
+  })
   
   const csvContent = [headers.join(','), ...rows].join('\n')
   
-  // 下载
   const blob = new Blob(['\ufeff' + csvContent], { type: 'text/csv;charset=utf-8' })
   const url = URL.createObjectURL(blob)
   const link = document.createElement('a')
@@ -895,15 +1434,21 @@ onMounted(async () => {
     initialLoading.value = false
   }
 
-  resetGenerationPage()
-  applyRouteQuery()
   await loadTaxonomy()
+  const restored = await restoreGenerationSession()
+  if (!restored) {
+    resetGenerationPage()
+    applyRouteQuery()
+  }
 })
 
-onActivated(() => {
-  // keepAlive 场景：每次进入新建页默认重置，再按路由参数预填
-  resetGenerationPage()
-  applyRouteQuery()
+onActivated(async () => {
+  if (hasInMemoryGenerationState.value) return
+  const restored = await restoreGenerationSession()
+  if (!restored) {
+    resetGenerationPage()
+    applyRouteQuery()
+  }
 })
 
 onUnmounted(() => {
@@ -1005,6 +1550,28 @@ onUnmounted(() => {
     color: #909399;
     margin-top: 4px;
     line-height: 1.4;
+  }
+
+  .conversation-slider-wrapper {
+    width: 100%;
+  }
+
+  .conversation-ratio-grid {
+    width: 100%;
+    display: grid;
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+    gap: 12px;
+  }
+
+  .ratio-item {
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+  }
+
+  .ratio-label {
+    font-size: 13px;
+    color: #606266;
   }
   
   .mt-10 {

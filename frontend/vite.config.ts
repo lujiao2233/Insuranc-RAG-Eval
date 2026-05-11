@@ -1,6 +1,21 @@
 import { defineConfig } from 'vite'
 import vue from '@vitejs/plugin-vue'
 import { resolve } from 'path'
+import { networkInterfaces } from 'os'
+
+function getLocalIP(): string {
+  const nets = networkInterfaces()
+  for (const name of Object.keys(nets)) {
+    const netList = nets[name]
+    if (!netList) continue
+    for (const net of netList) {
+      if (net.family === 'IPv4' && !net.internal) {
+        return net.address
+      }
+    }
+  }
+  return 'localhost'
+}
 
 export default defineConfig({
   plugins: [vue()],
@@ -10,7 +25,7 @@ export default defineConfig({
     }
   },
   server: {
-    host: '0.0.0.0',
+    host: getLocalIP(),
     port: 3000,
     proxy: {
       '/api': {

@@ -137,8 +137,11 @@ class QwenService(LLMServiceInterface):
                             result = response.json()
                             usage = result.get("usage", {})
                             latency_ms = int(duration * 1000)
-                            # 异步记录以避免阻塞
-                            asyncio.create_task(asyncio.to_thread(log_token_usage, module_name, self.model, usage, latency_ms))
+                            # 同步记录token使用，避免事件循环关闭问题
+                            try:
+                                log_token_usage(module_name, self.model, usage, latency_ms)
+                            except Exception as log_error:
+                                logger.warning(f"记录token使用失败: {log_error}")
                             return result["choices"][0]["message"]["content"]
                         else:
                             raise Exception(f"OpenAI兼容接口调用失败: {response.status_code} - {response.text}")
@@ -180,8 +183,11 @@ class QwenService(LLMServiceInterface):
                                     "total_tokens": usage.get("total_tokens", 0)
                                 }
                             latency_ms = int(duration * 1000)
-                            # 异步记录以避免阻塞
-                            asyncio.create_task(asyncio.to_thread(log_token_usage, module_name, self.model, usage, latency_ms))
+                            # 同步记录token使用，避免事件循环关闭问题
+                            try:
+                                log_token_usage(module_name, self.model, usage, latency_ms)
+                            except Exception as log_error:
+                                logger.warning(f"记录token使用失败: {log_error}")
                             return result["output"]["text"]
                         else:
                             raise Exception(f"DashScope原生接口调用失败: {response.status_code} - {response.text}")
@@ -198,7 +204,10 @@ class QwenService(LLMServiceInterface):
         
         # 如果重试耗尽仍然失败，记录失败日志
         error_msg = f"LLM生成文本失败（共尝试 {max_retries} 次）: {str(last_error)}"
-        asyncio.create_task(asyncio.to_thread(log_token_usage, module_name, self.model, {}, 0, is_error=True, error_msg=error_msg))
+        try:
+            log_token_usage(module_name, self.model, {}, 0, is_error=True, error_msg=error_msg)
+        except Exception as log_error:
+            logger.warning(f"记录失败日志token使用失败: {log_error}")
         raise Exception(error_msg)
     
     async def analyze_document(self, text: str, task: str = "summarize") -> Dict[str, Any]:

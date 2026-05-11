@@ -1,6 +1,6 @@
 <template>
   <div class="page testset-detail-page" v-loading="loading">
-    <el-page-header @back="$router.back()" class="section">
+    <el-page-header @back="handleBack" class="section">
       <template #content>
         <span class="page-title">{{ testset?.name }}</span>
       </template>
@@ -12,13 +12,13 @@
           <el-card shadow="never">
             <template #header>
               <div class="card-header">
-                <span class="card-title">问题列表</span>
+                <span class="card-title">{{ isConversationMode ? '会话 Case 列表' : '问题列表' }}</span>
                 <div>
-                  <el-button type="primary" @click="showAddDialog = true">
+                  <el-button v-if="!isConversationMode" type="primary" @click="showAddDialog = true">
                     <el-icon><Plus /></el-icon>
                     添加问题
                   </el-button>
-                  <el-dropdown split-button type="success" @click="generateQuestions" v-if="questions.length === 0">
+                  <el-dropdown split-button type="success" @click="generateQuestions" v-if="!isConversationMode && questions.length === 0">
                     <el-icon><MagicStick /></el-icon>
                     自动生成
                     <template #dropdown>
@@ -33,105 +33,201 @@
               </div>
             </template>
             
-            <!-- 问题筛选 -->
-            <div class="filter-bar section-sm">
-              <el-select 
-                v-model="questionTypeFilter" 
-                placeholder="问题类型" 
-                clearable
-                style="width: 150px;"
-                @change="filterQuestions"
-              >
-                <el-option
-                  v-for="minor in questionTypeOptions"
-                  :key="minor"
-                  :label="minor"
-                  :value="minor"
+            <template v-if="!isConversationMode">
+              <!-- 问题筛选 -->
+              <div class="filter-bar section-sm">
+                <el-select 
+                  v-model="questionTypeFilter" 
+                  placeholder="问题类型" 
+                  clearable
+                  style="width: 150px;"
+                  @change="filterQuestions"
+                >
+                  <el-option
+                    v-for="minor in questionTypeOptions"
+                    :key="minor"
+                    :label="minor"
+                    :value="minor"
+                  />
+                </el-select>
+                
+                <el-select 
+                  v-model="categoryMajorFilter" 
+                  placeholder="主要分类" 
+                  clearable
+                  style="width: 150px;"
+                  @change="filterQuestions"
+                >
+                  <el-option label="基础理解类" value="基础理解类" />
+                  <el-option label="推理与综合类" value="推理与综合类" />
+                  <el-option label="数值与计算类" value="数值与计算类" />
+                  <el-option label="鲁棒性/输入质量类" value="鲁棒性/输入质量类" />
+                  <el-option label="合规与安全类" value="合规与安全类" />
+                  <el-option label="多文档关联类" value="多文档关联类" />
+                </el-select>
+                
+                <el-input
+                  v-model="questionSearch"
+                  placeholder="搜索问题"
+                  style="width: 200px;"
+                  @input="filterQuestions"
+                  clearable
                 />
-              </el-select>
+              </div>
               
-              <el-select 
-                v-model="categoryMajorFilter" 
-                placeholder="主要分类" 
-                clearable
-                style="width: 150px;"
-                @change="filterQuestions"
+              <el-table 
+                :data="paginatedQuestions" 
+                style="width: 100%"
+                size="small"
+                :default-sort="{ prop: 'question_type', order: 'ascending' }"
               >
-                <el-option label="基础理解类" value="基础理解类" />
-                <el-option label="推理与综合类" value="推理与综合类" />
-                <el-option label="数值与计算类" value="数值与计算类" />
-                <el-option label="鲁棒性/输入质量类" value="鲁棒性/输入质量类" />
-                <el-option label="合规与安全类" value="合规与安全类" />
-                <el-option label="多文档关联类" value="多文档关联类" />
-              </el-select>
+                <el-table-column prop="question" label="问题" min-width="250">
+                  <template #default="{ row }">
+                    <el-text truncated>{{ row.question }}</el-text>
+                  </template>
+                </el-table-column>
+                <el-table-column prop="category_major" label="主要分类" width="120">
+                  <template #default="{ row }">
+                    <el-tag size="small" type="info" v-if="row.category_major">{{ row.category_major }}</el-tag>
+                    <span v-else>-</span>
+                  </template>
+                </el-table-column>
+                <el-table-column prop="category_minor" label="次要分类" width="120">
+                  <template #default="{ row }">
+                    <el-tag size="small" type="warning" v-if="row.category_minor">{{ row.category_minor }}</el-tag>
+                    <span v-else>-</span>
+                  </template>
+                </el-table-column>
+                <el-table-column v-if="showModelAnswerColumn" prop="answer" label="模型答案" min-width="200">
+                  <template #default="{ row }">
+                    <el-text truncated>{{ row.answer || '-' }}</el-text>
+                  </template>
+                </el-table-column>
+                <el-table-column prop="expected_answer" label="期望答案" min-width="200">
+                  <template #default="{ row }">
+                    <el-text truncated>{{ row.expected_answer || '-' }}</el-text>
+                  </template>
+                </el-table-column>
+                <el-table-column label="操作" width="120" fixed="right">
+                  <template #default="{ row }">
+                    <div class="button-row">
+                      <el-button link type="primary" size="small" @click="editQuestion(row)">
+                        编辑
+                      </el-button>
+                      <el-button link type="danger" size="small" @click="deleteQuestion(row)">
+                        删除
+                      </el-button>
+                    </div>
+                  </template>
+                </el-table-column>
+              </el-table>
               
-              <el-input
-                v-model="questionSearch"
-                placeholder="搜索问题"
-                style="width: 200px;"
-                @input="filterQuestions"
-                clearable
-              />
-            </div>
-            
-            <el-table 
-              :data="paginatedQuestions" 
-              style="width: 100%"
-              size="small"
-              :default-sort="{ prop: 'question_type', order: 'ascending' }"
-            >
-              <el-table-column prop="question" label="问题" min-width="250">
-                <template #default="{ row }">
-                  <el-text truncated>{{ row.question }}</el-text>
-                </template>
-              </el-table-column>
-              <el-table-column prop="category_major" label="主要分类" width="120">
-                <template #default="{ row }">
-                  <el-tag size="small" type="info" v-if="row.category_major">{{ row.category_major }}</el-tag>
-                  <span v-else>-</span>
-                </template>
-              </el-table-column>
-              <el-table-column prop="category_minor" label="次要分类" width="120">
-                <template #default="{ row }">
-                  <el-tag size="small" type="warning" v-if="row.category_minor">{{ row.category_minor }}</el-tag>
-                  <span v-else>-</span>
-                </template>
-              </el-table-column>
-              <el-table-column v-if="showModelAnswerColumn" prop="answer" label="模型答案" min-width="200">
-                <template #default="{ row }">
-                  <el-text truncated>{{ row.answer || '-' }}</el-text>
-                </template>
-              </el-table-column>
-              <el-table-column prop="expected_answer" label="期望答案" min-width="200">
-                <template #default="{ row }">
-                  <el-text truncated>{{ row.expected_answer || '-' }}</el-text>
-                </template>
-              </el-table-column>
-              <el-table-column label="操作" width="120" fixed="right">
-                <template #default="{ row }">
-                  <div class="button-row">
-                    <el-button link type="primary" size="small" @click="editQuestion(row)">
-                      编辑
-                    </el-button>
-                    <el-button link type="danger" size="small" @click="deleteQuestion(row)">
-                      删除
-                    </el-button>
-                  </div>
-                </template>
-              </el-table-column>
-            </el-table>
-            
-            <div class="pagination-container section-sm">
-              <el-pagination
-                v-model:current-page="currentPage"
-                v-model:page-size="pageSize"
-                :page-sizes="[10, 20, 50, 100]"
-                :total="filteredQuestions.length"
-                layout="total, sizes, prev, pager, next, jumper"
-                @size-change="handleSizeChange"
-                @current-change="handleCurrentChange"
-              />
-            </div>
+              <div class="pagination-container section-sm">
+                <el-pagination
+                  v-model:current-page="currentPage"
+                  v-model:page-size="pageSize"
+                  :page-sizes="[10, 20, 50, 100]"
+                  :total="filteredQuestions.length"
+                  layout="total, sizes, prev, pager, next, jumper"
+                  @size-change="handleSizeChange"
+                  @current-change="handleCurrentChange"
+                />
+              </div>
+            </template>
+
+            <template v-else>
+              <div v-if="conversationCases.length > 0" class="conversation-case-list">
+                <el-collapse>
+                  <el-collapse-item
+                    v-for="(conversationCase, caseIndex) in conversationCases"
+                    :key="conversationCase.id"
+                    :name="conversationCase.id"
+                  >
+                    <template #title>
+                      <div class="conversation-case-header">
+                        <span class="conversation-case-title">Case {{ caseIndex + 1 }}</span>
+                        <el-tag size="small" :type="getCaseTypeTagType(conversationCase.case_type)">
+                          {{ getCaseTypeLabel(conversationCase.case_type) }}
+                        </el-tag>
+                        <el-tag size="small" type="info">{{ conversationCase.turn_count }} 轮</el-tag>
+                      </div>
+                    </template>
+
+                    <div class="conversation-case-body">
+                      <div class="conversation-case-meta">
+                        <div class="conversation-case-meta-item">
+                          <span class="meta-label">评估标准</span>
+                          <span class="meta-value">{{ conversationCase.evaluation_criteria || '-' }}</span>
+                        </div>
+                        <div class="conversation-case-meta-item">
+                          <span class="meta-label">切片来源</span>
+                          <div class="source-chunk-list">
+                            <div
+                              v-for="sourceChunk in getCaseSourceChunks(conversationCase)"
+                              :key="sourceChunk.id"
+                              class="source-chunk-card"
+                            >
+                              <div class="source-chunk-header">
+                                <div class="source-chunk-title-row">
+                                  <el-tag size="small" :type="sourceChunk.role === 'anchor' ? 'success' : 'info'">
+                                    {{ sourceChunk.role === 'anchor' ? '锚点切片' : '辅助切片' }}
+                                  </el-tag>
+                                  <span class="source-chunk-title">
+                                    {{ sourceChunk.filename || `切片 ${sourceChunk.id}` }}
+                                  </span>
+                                  <span v-if="typeof sourceChunk.sequence_number === 'number'" class="source-chunk-seq">
+                                    #{{ sourceChunk.sequence_number }}
+                                  </span>
+                                </div>
+                              </div>
+                              <div class="source-chunk-content">{{ sourceChunk.content || '-' }}</div>
+                            </div>
+                            <span v-if="getCaseSourceChunks(conversationCase).length === 0">-</span>
+                          </div>
+                        </div>
+                      </div>
+
+                      <div class="conversation-turn-list">
+                        <div
+                          v-for="turn in sortedConversationTurns(conversationCase.turns)"
+                          :key="turn.id"
+                          class="conversation-turn-card"
+                        >
+                          <div class="conversation-turn-header">
+                            <div class="turn-title-row">
+                              <span class="turn-title">Turn {{ turn.turn_index }}</span>
+                              <el-tag size="small" :type="getDependencyTagType(turn.dependency_type)">
+                                {{ getDependencyLabel(turn.dependency_type) }}
+                              </el-tag>
+                            </div>
+                            <el-button link type="primary" size="small" @click="openTurnAnswerEditor(conversationCase, turn)">
+                              编辑期望答案
+                            </el-button>
+                          </div>
+                          <div class="conversation-turn-field">
+                            <span class="field-label">问题</span>
+                            <div class="field-value">{{ turn.question }}</div>
+                          </div>
+                          <div class="conversation-turn-field">
+                            <span class="field-label">期望答案</span>
+                            <div class="field-value">{{ turn.expected_answer || '-' }}</div>
+                          </div>
+                          <div v-if="turn.generated_answer" class="conversation-turn-field">
+                            <span class="field-label">模型回答</span>
+                            <div class="field-value model-answer">{{ turn.generated_answer }}</div>
+                          </div>
+                          <div v-if="turn.context_hint" class="conversation-turn-field">
+                            <span class="field-label">上下文依赖</span>
+                            <div class="field-value">{{ turn.context_hint }}</div>
+                          </div>
+                        </div>
+                      </div>
+                    </div>
+                  </el-collapse-item>
+                </el-collapse>
+              </div>
+              <el-empty v-else description="暂无多轮会话 Case 数据" />
+            </template>
           </el-card>
         </el-col>
         
@@ -150,7 +246,7 @@
                 <el-icon><Download /></el-icon>
                 导出测试集
               </el-button>
-              <el-button @click="showGenerateConfig = true">
+              <el-button v-if="!isConversationMode" @click="showGenerateConfig = true">
                 <el-icon><Setting /></el-icon>
                 重新生成
               </el-button>
@@ -299,6 +395,32 @@
         </el-button>
       </template>
     </el-dialog>
+
+    <el-dialog
+      v-model="showTurnEditDialog"
+      title="编辑 Turn 期望答案"
+      width="700px"
+    >
+      <el-form label-width="90px">
+        <el-form-item label="问题">
+          <div class="turn-edit-question">{{ editingConversationTurn?.question || '-' }}</div>
+        </el-form-item>
+        <el-form-item label="期望答案">
+          <el-input
+            v-model="conversationTurnForm.expected_answer"
+            type="textarea"
+            :rows="6"
+            placeholder="请输入该轮的期望答案"
+          />
+        </el-form-item>
+      </el-form>
+      <template #footer>
+        <el-button @click="showTurnEditDialog = false">取消</el-button>
+        <el-button type="primary" :loading="savingConversationTurn" @click="saveConversationTurnAnswer">
+          保存
+        </el-button>
+      </template>
+    </el-dialog>
   </div>
 </template>
 
@@ -310,15 +432,25 @@ import { Plus, MagicStick, DataLine, Download, Delete, Setting, Document } from 
 import { testsetApi } from '@/api/testsets'
 import { documentApi } from '@/api/documents'
 import { formatDateTime } from '@/utils/format'
-import type { TestSet, Question, Document as DocumentType } from '@/types'
+import type { TestSet, Question, Document as DocumentType, ConversationCase, ConversationTurn } from '@/types'
 import type { FormInstance, FormRules } from 'element-plus'
 
 const route = useRoute()
 const router = useRouter()
 
+const handleBack = () => {
+  sessionStorage.setItem('pending-close-tag-path', route.path)
+  if (window.history.length > 1) {
+    router.back()
+    return
+  }
+  router.push('/testsets')
+}
+
 const loading = ref(false)
 const testset = ref<TestSet | null>(null)
 const questions = ref<Question[]>([])
+const conversationCases = ref<ConversationCase[]>([])
 const relatedDocuments = ref<DocumentType[]>([])
 const filteredQuestions = ref<Question[]>([])
 const currentPage = ref(1)
@@ -334,6 +466,10 @@ const showAddDialog = ref(false)
 const saving = ref(false)
 const editingQuestion = ref<Question | null>(null)
 const questionFormRef = ref<FormInstance>()
+const showTurnEditDialog = ref(false)
+const savingConversationTurn = ref(false)
+const editingConversationCase = ref<ConversationCase | null>(null)
+const editingConversationTurn = ref<ConversationTurn | null>(null)
 
 // 重新生成配置相关
 const showGenerateConfig = ref(false)
@@ -352,6 +488,10 @@ const questionForm = reactive({
 const generateForm = reactive({
   num_questions: 10,
   question_types: ['事实召回', '条件推理']
+})
+
+const conversationTurnForm = reactive({
+  expected_answer: ''
 })
 
 const questionRules: FormRules = {
@@ -391,9 +531,7 @@ const questionTypeOptions = computed(() => {
   return categoryGroups.flatMap(category => category.minors)
 })
 
-const getQuestionTypeText = (type: string) => {
-  return type || '-'
-}
+const isConversationMode = computed(() => testset.value?.conversation_mode === 'multi_turn')
 
 const fetchTestset = async () => {
   const id = route.params.id as string
@@ -401,12 +539,21 @@ const fetchTestset = async () => {
   
   try {
     testset.value = await testsetApi.getTestSet(id)
-    await fetchQuestions()
+    if (isConversationMode.value) {
+      await fetchConversationCases()
+      questions.value = []
+      filteredQuestions.value = []
+    } else {
+      await fetchQuestions()
+      conversationCases.value = []
+    }
     await fetchRelatedDocuments()
-    filterQuestions()
+    if (!isConversationMode.value) {
+      filterQuestions()
+    }
   } catch (error) {
     ElMessage.error('获取测试集详情失败')
-    router.back()
+    handleBack()
   } finally {
     loading.value = false
   }
@@ -426,6 +573,15 @@ const fetchRelatedDocuments = async () => {
       .split(',')
       .map(id => id.trim())
       .filter(Boolean)
+    const conversationDocIds = conversationCases.value
+      .flatMap((conversationCase) => {
+        const meta = (conversationCase.case_metadata || {}) as Record<string, any>
+        const supportIds = Array.isArray(meta.support_document_ids)
+          ? meta.support_document_ids.map(id => String(id).trim()).filter(Boolean)
+          : []
+        const anchorId = String(meta.anchor_document_id || '').trim()
+        return [...(anchorId ? [anchorId] : []), ...supportIds]
+      })
     const questionDocIds = questions.value
       .map((q: any) => {
         const meta = (q?.metadata || {}) as Record<string, any>
@@ -433,7 +589,7 @@ const fetchRelatedDocuments = async () => {
       })
       .filter(Boolean)
 
-    const docIds = Array.from(new Set([...metadataDocIds, ...fallbackDocIds, ...questionDocIds]))
+    const docIds = Array.from(new Set([...metadataDocIds, ...fallbackDocIds, ...conversationDocIds, ...questionDocIds]))
 
     if (docIds.length === 0) {
       relatedDocuments.value = []
@@ -459,6 +615,22 @@ const fetchQuestions = async () => {
     filterQuestions() // 获取后重新过滤
   } catch (error) {
     console.error('Failed to fetch questions:', error)
+  }
+}
+
+const fetchConversationCases = async () => {
+  if (!testset.value) return
+
+  try {
+    if (Array.isArray(testset.value.conversation_cases) && testset.value.conversation_cases.length > 0) {
+      conversationCases.value = testset.value.conversation_cases
+      return
+    }
+    const response = await testsetApi.getConversationCases(testset.value.id)
+    conversationCases.value = response.items || []
+  } catch (error) {
+    console.error('Failed to fetch conversation cases:', error)
+    conversationCases.value = []
   }
 }
 
@@ -507,6 +679,90 @@ const paginatedQuestions = computed(() => {
 const showModelAnswerColumn = computed(() => {
   return questions.value.some(q => !!(q.answer && String(q.answer).trim()))
 })
+
+const sortedConversationTurns = (turns: ConversationTurn[]) => {
+  return [...(turns || [])].sort((a, b) => (a.turn_index || 0) - (b.turn_index || 0))
+}
+
+const getCaseTypeLabel = (caseType: string) => {
+  const mapping: Record<string, string> = {
+    single_chunk_deep: '单切片深挖',
+    same_doc_chain: '同文档切片链',
+    cross_doc_assoc: '跨文档关联'
+  }
+  return mapping[caseType] || caseType || '-'
+}
+
+const getCaseTypeTagType = (caseType: string) => {
+  const mapping: Record<string, 'success' | 'warning' | 'primary' | 'info'> = {
+    single_chunk_deep: 'success',
+    same_doc_chain: 'primary',
+    cross_doc_assoc: 'warning'
+  }
+  return mapping[caseType] || 'info'
+}
+
+const getDependencyLabel = (dependencyType: string) => {
+  const mapping: Record<string, string> = {
+    none: '无依赖',
+    contextual: '上下文依赖',
+    referential: '指代依赖',
+    accumulative: '累积依赖'
+  }
+  return mapping[dependencyType] || dependencyType || '-'
+}
+
+const getDependencyTagType = (dependencyType: string) => {
+  const mapping: Record<string, 'info' | 'primary' | 'warning' | 'success'> = {
+    none: 'info',
+    contextual: 'primary',
+    referential: 'warning',
+    accumulative: 'success'
+  }
+  return mapping[dependencyType] || 'info'
+}
+
+const getCaseSourceChunks = (conversationCase: ConversationCase) => {
+  return conversationCase.source_chunks || []
+}
+
+const openTurnAnswerEditor = (conversationCase: ConversationCase, turn: ConversationTurn) => {
+  editingConversationCase.value = conversationCase
+  editingConversationTurn.value = turn
+  conversationTurnForm.expected_answer = turn.expected_answer || ''
+  showTurnEditDialog.value = true
+}
+
+const saveConversationTurnAnswer = async () => {
+  if (!testset.value || !editingConversationCase.value || !editingConversationTurn.value) return
+
+  savingConversationTurn.value = true
+  try {
+    const updatedTurn = await testsetApi.updateConversationTurn(
+      testset.value.id,
+      editingConversationCase.value.id,
+      editingConversationTurn.value.id,
+      {
+        expected_answer: conversationTurnForm.expected_answer
+      }
+    )
+
+    const caseIndex = conversationCases.value.findIndex(item => item.id === editingConversationCase.value?.id)
+    if (caseIndex >= 0) {
+      const turnIndex = conversationCases.value[caseIndex].turns.findIndex(item => item.id === updatedTurn.id)
+      if (turnIndex >= 0) {
+        conversationCases.value[caseIndex].turns[turnIndex] = updatedTurn
+      }
+    }
+
+    showTurnEditDialog.value = false
+    ElMessage.success('期望答案更新成功')
+  } catch (error) {
+    ElMessage.error('更新期望答案失败')
+  } finally {
+    savingConversationTurn.value = false
+  }
+}
 
 const editQuestion = (question: Question) => {
   editingQuestion.value = question
@@ -752,6 +1008,151 @@ onMounted(() => {
     gap: 10px;
     align-items: center;
   }
+
+  .conversation-case-list {
+    display: flex;
+    flex-direction: column;
+    gap: 12px;
+  }
+
+  .conversation-case-header {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    flex-wrap: wrap;
+  }
+
+  .conversation-case-title {
+    font-weight: 600;
+    color: var(--text-1, #303133);
+  }
+
+  .conversation-case-body {
+    display: flex;
+    flex-direction: column;
+    gap: 16px;
+    padding-top: 8px;
+  }
+
+  .conversation-case-meta {
+    display: flex;
+    flex-direction: column;
+    gap: 10px;
+    padding: 12px;
+    background: var(--bg-app, #f8fafc);
+    border-radius: var(--radius-8, 8px);
+  }
+
+  .conversation-case-meta-item {
+    display: flex;
+    gap: 12px;
+    align-items: flex-start;
+  }
+
+  .meta-label,
+  .field-label {
+    width: 84px;
+    flex-shrink: 0;
+    color: var(--text-2, #606266);
+    font-size: 13px;
+  }
+
+  .meta-value,
+  .field-value {
+    color: var(--text-1, #303133);
+    line-height: 1.6;
+    white-space: pre-wrap;
+    word-break: break-word;
+  }
+
+  .source-chunk-list {
+    display: flex;
+    flex-direction: column;
+    gap: 10px;
+    width: 100%;
+  }
+
+  .source-chunk-card {
+    border: 1px solid var(--border-1, #ebeef5);
+    border-radius: var(--radius-8, 8px);
+    background: #fff;
+    padding: 12px;
+  }
+
+  .source-chunk-header {
+    margin-bottom: 8px;
+  }
+
+  .source-chunk-title-row {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    flex-wrap: wrap;
+  }
+
+  .source-chunk-title {
+    font-weight: 500;
+    color: var(--text-1, #303133);
+  }
+
+  .source-chunk-seq {
+    font-size: 12px;
+    color: var(--text-3, #909399);
+  }
+
+  .source-chunk-content {
+    color: var(--text-1, #303133);
+    white-space: pre-wrap;
+    word-break: break-word;
+    line-height: 1.7;
+  }
+
+  .conversation-turn-list {
+    display: flex;
+    flex-direction: column;
+    gap: 12px;
+  }
+
+  .conversation-turn-card {
+    border: 1px solid var(--border-1, #ebeef5);
+    border-radius: var(--radius-8, 8px);
+    padding: 16px;
+    display: flex;
+    flex-direction: column;
+    gap: 12px;
+  }
+
+  .conversation-turn-header {
+    display: flex;
+    justify-content: space-between;
+    gap: 12px;
+    align-items: center;
+  }
+
+  .turn-title-row {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    flex-wrap: wrap;
+  }
+
+  .turn-title {
+    font-weight: 600;
+    color: var(--text-1, #303133);
+  }
+
+  .conversation-turn-field {
+    display: flex;
+    align-items: flex-start;
+    gap: 12px;
+  }
+
+  .model-answer {
+    background: var(--bg-app, #f8fafc);
+    padding: 8px 12px;
+    border-radius: var(--radius-6, 6px);
+    border: 1px solid var(--border-1, #ebeef5);
+  }
   
   .button-row {
     display: flex;
@@ -804,6 +1205,12 @@ onMounted(() => {
 
   .no-document {
     padding: 20px 0;
+  }
+
+  .turn-edit-question {
+    white-space: pre-wrap;
+    line-height: 1.6;
+    color: var(--text-1, #303133);
   }
   
   .pagination-container {

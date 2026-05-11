@@ -70,6 +70,31 @@ export const useEvaluationStore = defineStore('evaluation', () => {
     }
   }
 
+  async function createConversationEvaluation(data: { testset_id: string; evaluation_metrics?: string[] }) {
+    loading.value = true
+    error.value = null
+
+    try {
+      const response = await evaluationApi.createConversationEvaluation(data)
+
+      taskStatus.value = {
+        id: response.task_id,
+        type: 'evaluation',
+        status: 'pending',
+        progress: 0,
+        message: response.message || '',
+        logs: []
+      }
+
+      return response
+    } catch (e: any) {
+      error.value = e.response?.data?.detail || '创建多轮评估失败'
+      throw e
+    } finally {
+      loading.value = false
+    }
+  }
+
   async function fetchTaskStatus(taskId: string) {
     try {
       const status = await evaluationApi.getTaskStatus(taskId)
@@ -121,6 +146,7 @@ export const useEvaluationStore = defineStore('evaluation', () => {
     fetchEvaluations,
     fetchEvaluation,
     createEvaluation,
+    createConversationEvaluation,
     fetchTaskStatus,
     fetchEvaluationResults,
     deleteEvaluation,

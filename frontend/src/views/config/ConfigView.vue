@@ -58,42 +58,6 @@
           </template>
           
           <el-form label-width="150px">
-            <el-form-item label="生成模型">
-              <el-select
-                v-model="modelConfig.generation_model"
-                filterable
-                allow-create
-                default-first-option
-                placeholder="请选择或输入生成模型"
-                style="width: 100%;"
-              >
-                <el-option
-                  v-for="model in modelOptions"
-                  :key="model"
-                  :label="model"
-                  :value="model"
-                />
-              </el-select>
-            </el-form-item>
-            
-            <el-form-item label="评估模型">
-              <el-select
-                v-model="modelConfig.evaluation_model"
-                filterable
-                allow-create
-                default-first-option
-                placeholder="请选择或输入评估模型"
-                style="width: 100%;"
-              >
-                <el-option
-                  v-for="model in modelOptions"
-                  :key="model"
-                  :label="model"
-                  :value="model"
-                />
-              </el-select>
-            </el-form-item>
-
             <el-form-item label="分析模型">
               <el-select
                 v-model="modelConfig.analysis_model"
@@ -105,9 +69,45 @@
               >
                 <el-option
                   v-for="model in modelOptions"
-                  :key="model"
-                  :label="model"
-                  :value="model"
+                  :key="model.value"
+                  :label="model.label"
+                  :value="model.value"
+                />
+              </el-select>
+            </el-form-item>
+
+            <el-form-item label="评估模型">
+              <el-select
+                v-model="modelConfig.evaluation_model"
+                filterable
+                allow-create
+                default-first-option
+                placeholder="请选择或输入评估模型"
+                style="width: 100%;"
+              >
+                <el-option
+                  v-for="model in modelOptions"
+                  :key="model.value"
+                  :label="model.label"
+                  :value="model.value"
+                />
+              </el-select>
+            </el-form-item>
+            
+            <el-form-item label="生成模型">
+              <el-select
+                v-model="modelConfig.generation_model"
+                filterable
+                allow-create
+                default-first-option
+                placeholder="请选择或输入生成模型"
+                style="width: 100%;"
+              >
+                <el-option
+                  v-for="model in modelOptions"
+                  :key="model.value"
+                  :label="model.label"
+                  :value="model.value"
                 />
               </el-select>
             </el-form-item>
@@ -124,6 +124,37 @@
               <el-button type="primary" @click="saveModelConfig">保存配置</el-button>
             </el-form-item>
           </el-form>
+        </el-card>
+        
+        <el-card class="section pricing-card" shadow="never">
+          <template #header>
+            <div class="card-header" @click="showPricing = !showPricing" style="cursor: pointer;">
+              <span class="card-title">计费规则</span>
+              <el-icon :class="{ 'rotate-icon': !showPricing }">
+                <ArrowDown />
+              </el-icon>
+            </div>
+          </template>
+          
+          <transition name="collapse">
+            <div v-show="showPricing" class="pricing-tables">
+              <div v-for="(group, groupName) in pricingGroups" :key="groupName" class="pricing-group">
+                <h4>{{ groupName }}</h4>
+                <el-table 
+                  :data="group.tiers" 
+                  border 
+                  stripe 
+                  class="pricing-table"
+                  :span-method="({ row, column, rowIndex, columnIndex }) => mergeModelCells(group.tiers, { row, column, rowIndex, columnIndex })"
+                >
+                  <el-table-column prop="model" label="模型名称" min-width="180" />
+                  <el-table-column prop="token_range" label="Token范围" min-width="150" />
+                  <el-table-column prop="input_price" label="输入单价(元/百万Token)" min-width="180" />
+                  <el-table-column prop="output_price" label="输出单价(元/百万Token)" min-width="180" />
+                </el-table>
+              </div>
+            </div>
+          </transition>
         </el-card>
       </el-tab-pane>
       
@@ -258,6 +289,11 @@
             <el-form-item label="单切片最大字数">
               <el-input-number v-model="systemConfig.max_chunk_chars" :min="100" :max="2000" />
             </el-form-item>
+
+            <el-form-item label="并发生成数">
+              <el-input-number v-model="systemConfig.generation_concurrency" :min="1" :max="10" />
+              <span style="margin-left: 8px; color: #909399; font-size: 12px;">同时调用LLM的线程数，越大越快但更消耗资源</span>
+            </el-form-item>
             
             <el-form-item>
               <el-button type="primary" @click="saveSystemConfig">保存配置</el-button>
@@ -272,10 +308,86 @@
 <script setup lang="ts">
 import { ref, reactive, onMounted } from 'vue'
 import { ElMessage } from 'element-plus'
-import { Connection, Download, RefreshRight } from '@element-plus/icons-vue'
+import { Connection, Download, RefreshRight, ArrowDown } from '@element-plus/icons-vue'
 import { configApi } from '@/api/config'
 
 const activeTab = ref('api')
+const activeCollapse = ref([])
+const showPricing = ref(false)
+
+const pricingGroups = {
+  '千问Plus系列': {
+    tiers: [
+      { model: 'qwen3.6-plus', token_range: '0~256K', input_price: '2.0', output_price: '12.0' },
+      { model: 'qwen3.6-plus', token_range: '256K~1M', input_price: '8.0', output_price: '48.0' },
+      { model: 'qwen3.5-plus', token_range: '0~128K', input_price: '0.8', output_price: '4.8' },
+      { model: 'qwen3.5-plus', token_range: '128K~256K', input_price: '2.0', output_price: '12.0' },
+      { model: 'qwen3.5-plus', token_range: '256K~1M', input_price: '4.0', output_price: '24.0' },
+      { model: 'qwen-plus', token_range: '0~128K', input_price: '0.8', output_price: '2.0' },
+      { model: 'qwen-plus', token_range: '128K~256K', input_price: '2.4', output_price: '20.0' },
+      { model: 'qwen-plus', token_range: '256K~1M', input_price: '4.8', output_price: '48.0' },
+    ]
+  },
+  '千问Max系列': {
+    tiers: [
+      { model: 'qwen3.6-max-preview', token_range: '0~128K', input_price: '9.0', output_price: '54.0' },
+      { model: 'qwen3.6-max-preview', token_range: '128K~256K', input_price: '15.0', output_price: '90.0' },
+      { model: 'qwen3-max', token_range: '0~32K', input_price: '2.5', output_price: '10.0' },
+      { model: 'qwen3-max', token_range: '32K~128K', input_price: '4.0', output_price: '16.0' },
+      { model: 'qwen3-max', token_range: '128K~252K', input_price: '7.0', output_price: '28.0' },
+      { model: 'qwen-max', token_range: '无阶梯', input_price: '2.4', output_price: '9.6' },
+    ]
+  },
+  '千问Flash系列': {
+    tiers: [
+      { model: 'qwen3.6-flash', token_range: '0~256K', input_price: '1.2', output_price: '7.2' },
+      { model: 'qwen3.6-flash', token_range: '256K~1M', input_price: '4.8', output_price: '28.8' },
+      { model: 'qwen3.5-flash', token_range: '0~128K', input_price: '0.2', output_price: '2.0' },
+      { model: 'qwen3.5-flash', token_range: '128K~256K', input_price: '0.8', output_price: '8.0' },
+      { model: 'qwen3.5-flash', token_range: '256K~1M', input_price: '1.2', output_price: '12.0' },
+      { model: 'qwen-flash', token_range: '0~128K', input_price: '0.15', output_price: '1.5' },
+      { model: 'qwen-flash', token_range: '128K~256K', input_price: '0.6', output_price: '6.0' },
+      { model: 'qwen-flash', token_range: '256K~1M', input_price: '1.2', output_price: '12.0' },
+    ]
+  },
+  '千问Turbo系列': {
+    tiers: [
+      { model: 'qwen-turbo', token_range: '无阶梯', input_price: '0.3', output_price: '0.6' },
+    ]
+  },
+  'QwQ 思考模型': {
+    tiers: [
+      { model: 'qwq-plus', token_range: '无阶梯', input_price: '1.6', output_price: '4.0' },
+    ]
+  },
+  '第三方模型': {
+    tiers: [
+      { model: 'deepseek-v3.2', token_range: '无阶梯', input_price: '2.0', output_price: '3.0' },
+      { model: 'deepseek-v3', token_range: '无阶梯', input_price: '2.0', output_price: '8.0' },
+      { model: 'glm-5', token_range: '无阶梯', input_price: '1.0', output_price: '4.0' },
+      { model: 'glm-5.1', token_range: '无阶梯', input_price: '6.0', output_price: '24.0' },
+      { model: 'glm-4-plus', token_range: '无阶梯', input_price: '5.0', output_price: '5.0' },
+      { model: 'glm-4-flash', token_range: '无阶梯', input_price: '免费', output_price: '免费' },
+    ]
+  }
+}
+
+const mergeModelCells = (tiers: any[], { row, column, rowIndex, columnIndex }: { row: any, column: any, rowIndex: number, columnIndex: number }) => {
+  if (columnIndex === 0) {
+    let prevIndex = rowIndex - 1
+    while (prevIndex >= 0 && tiers[prevIndex].model === row.model) {
+      prevIndex--
+    }
+    if (prevIndex !== rowIndex - 1) {
+      return { rowspan: 0, colspan: 0 }
+    }
+    let rowSpan = 1
+    while (rowIndex + rowSpan < tiers.length && tiers[rowIndex + rowSpan].model === row.model) {
+      rowSpan++
+    }
+    return { rowspan: rowSpan, colspan: 1 }
+  }
+}
 
 const apiConfig = reactive({
   qwen_api_key: '',
@@ -291,13 +403,29 @@ const modelConfig = reactive({
 })
 
 const modelOptions = [
-  'qwen3.6-flash',
-  'qwen3.6-plus',
-  'qwen3.5-plus',
-  'qwen3.5-flash',
-  'qwen3-max',
-  'deepseek-v3.2',
-  'glm-5'
+  // 千问Plus系列
+  { value: 'qwen3.6-plus', label: 'qwen3.6-plus' },
+  { value: 'qwen3.5-plus', label: 'qwen3.5-plus' },
+  { value: 'qwen-plus', label: 'qwen-plus' },
+  // 千问Max系列
+  { value: 'qwen3.6-max-preview', label: 'qwen3.6-max-preview' },
+  { value: 'qwen3-max', label: 'qwen3-max' },
+  { value: 'qwen-max', label: 'qwen-max' },
+  // 千问Flash系列
+  { value: 'qwen3.6-flash', label: 'qwen3.6-flash' },
+  { value: 'qwen3.5-flash', label: 'qwen3.5-flash' },
+  { value: 'qwen-flash', label: 'qwen-flash' },
+  // 千问Turbo系列
+  { value: 'qwen-turbo', label: 'qwen-turbo' },
+  // QwQ 思考模型
+  { value: 'qwq-plus', label: 'qwq-plus' },
+  // 第三方模型
+  { value: 'deepseek-v3.2', label: 'deepseek-v3.2' },
+  { value: 'deepseek-v3', label: 'deepseek-v3' },
+  { value: 'glm-5', label: 'glm-5' },
+  { value: 'glm-5.1', label: 'glm-5.1' },
+  { value: 'glm-4-plus', label: 'glm-4-plus' },
+  { value: 'glm-4-flash', label: 'glm-4-flash' }
 ]
 
 const evaluationConfig = reactive({
@@ -318,7 +446,8 @@ const systemConfig = reactive({
   timeout: 60,
   max_file_size: 50,
   short_merge_threshold: 60,
-  max_chunk_chars: 500
+  max_chunk_chars: 500,
+  generation_concurrency: 3
 })
 
 const apiStatus = ref<Record<string, string>>({})
@@ -367,6 +496,11 @@ const fetchConfigs = async () => {
     }
     if (systemChunking['chunking.max_chunk_chars']) {
       systemConfig.max_chunk_chars = parseInt(systemChunking['chunking.max_chunk_chars']) || systemConfig.max_chunk_chars
+    }
+
+    const systemGeneration = systemRes.configs?.generation || {}
+    if (systemGeneration['generation.concurrency']) {
+      systemConfig.generation_concurrency = parseInt(systemGeneration['generation.concurrency']) || systemConfig.generation_concurrency
     }
   } catch (error) {
     console.error('Failed to fetch configs:', error)
@@ -442,7 +576,8 @@ const saveSystemConfig = async () => {
       'default.timeout': systemConfig.timeout.toString(),
       'files.max_size_mb': systemConfig.max_file_size.toString(),
       'chunking.short_merge_threshold': systemConfig.short_merge_threshold.toString(),
-      'chunking.max_chunk_chars': systemConfig.max_chunk_chars.toString()
+      'chunking.max_chunk_chars': systemConfig.max_chunk_chars.toString(),
+      'generation.concurrency': systemConfig.generation_concurrency.toString()
     })
     
     ElMessage.success('系统配置保存成功')
@@ -548,10 +683,33 @@ onMounted(() => {
   }
 
   .card-header {
-    display: flex;
-    justify-content: space-between;
-    align-items: center;
-  }
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+}
+
+.rotate-icon {
+  transform: rotate(-90deg);
+  transition: transform 0.3s;
+}
+
+.collapse-enter-active,
+.collapse-leave-active {
+  transition: all 0.3s ease;
+  overflow: hidden;
+}
+
+.collapse-enter-from,
+.collapse-leave-to {
+  opacity: 0;
+  max-height: 0;
+}
+
+.collapse-enter-to,
+.collapse-leave-from {
+  opacity: 1;
+  max-height: 2000px;
+}
   
   .api-status {
     h4 {
@@ -569,5 +727,35 @@ onMounted(() => {
 
 :deep(.el-card) {
   border-radius: var(--radius-8, 8px);
+}
+
+.pricing-collapse {
+  margin-top: 16px;
+
+  .collapse-title {
+    font-size: var(--font-14, 14px);
+    font-weight: 600;
+    color: var(--text-1, #303133);
+  }
+}
+
+.pricing-tables {
+  display: flex;
+  flex-direction: column;
+  gap: 24px;
+  padding: 16px;
+
+  .pricing-group {
+    h4 {
+      font-size: var(--font-14, 14px);
+      font-weight: 600;
+      color: var(--text-1, #303133);
+      margin-bottom: 12px;
+    }
+
+    .pricing-table {
+      width: 100%;
+    }
+  }
 }
 </style>

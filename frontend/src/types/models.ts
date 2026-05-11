@@ -36,6 +36,7 @@ export interface TestSet {
   name: string
   description?: string
   question_count: number
+  conversation_mode?: 'single_turn' | 'multi_turn'
   answered_questions?: number
   can_evaluate?: boolean
   eval_status?: 'evaluated' | 'evaluable' | 'not_evaluable'
@@ -44,9 +45,91 @@ export interface TestSet {
   generation_method: string
   file_path?: string
   metadata?: Record<string, any>
+  conversation_cases?: ConversationCase[]
   create_time: string
   created_at: string
   updated_at?: string
+}
+
+export interface ConversationTurn {
+  id: string
+  case_id: string
+  turn_index: number
+  question: string
+  expected_answer?: string
+  generated_answer?: string
+  dependency_type: 'none' | 'contextual' | 'referential' | 'accumulative' | string
+  context_hint?: string
+  metadata?: Record<string, any>
+  depends_on_turns?: number[]
+  question_state_refs?: string[]
+  evidence_chunk_ids?: string[]
+  created_at?: string | null
+  updated_at?: string | null
+}
+
+export interface ConversationSourceChunk {
+  id: string
+  role: 'anchor' | 'support' | string
+  document_id?: string
+  filename?: string
+  sequence_number?: number
+  content: string
+  metadata?: Record<string, any>
+}
+
+export interface ConversationCase {
+  id: string
+  testset_id: string
+  case_type: 'single_chunk_deep' | 'same_doc_chain' | 'cross_doc_assoc' | string
+  anchor_chunk_id?: string
+  support_chunk_ids?: string[]
+  source_chunks?: ConversationSourceChunk[]
+  evaluation_criteria?: string
+  turn_count: number
+  case_metadata?: Record<string, any>
+  turns: ConversationTurn[]
+  created_at?: string | null
+  updated_at?: string | null
+}
+
+export interface ConversationExecution {
+  id: string
+  testset_id: string
+  evaluation_id?: string | null
+  user_id?: string
+  status: 'pending' | 'running' | 'completed' | 'partial_failed' | 'failed' | 'cancelled' | string
+  started_at?: string | null
+  finished_at?: string | null
+  execution_metadata?: Record<string, any>
+}
+
+export interface ConversationTurnResult {
+  id: string
+  execution_id: string
+  case_id: string
+  turn_id: string
+  session_id_before?: string | null
+  session_id_after?: string | null
+  request_payload?: Record<string, any>
+  response_payload?: Record<string, any>
+  generated_answer?: string
+  refs?: string
+  turn_status: 'ok' | 'partial' | 'failed' | 'cancelled' | string
+  execution_time_ms?: number | null
+  created_at?: string | null
+  updated_at?: string | null
+}
+
+export interface TaskContextInfo {
+  current_case?: number
+  current_turn?: number
+  total_cases?: number
+  session_id?: string
+  currentCase?: number
+  currentTurn?: number
+  totalCases?: number
+  sessionId?: string
 }
 
 export interface Question {
@@ -68,7 +151,8 @@ export interface Evaluation {
   id: string
   user_id?: string
   testset_id?: string
-  evaluation_method: 'ragas_official' | 'deepeval'
+  evaluation_method: 'ragas_official' | 'deepeval' | 'deepeval_conversation' | string
+  evaluation_mode?: 'single_turn' | 'deepeval_conversation' | string
   total_questions: number
   evaluated_questions: number
   evaluation_time?: number
@@ -86,6 +170,8 @@ export interface EvaluationResult {
   id: string
   evaluation_id: string
   question_id?: string
+  case_id?: string
+  turn_id?: string
   question_text: string
   question_type?: string
   category_major?: string
@@ -93,10 +179,38 @@ export interface EvaluationResult {
   expected_answer?: string
   generated_answer?: string
   context?: string
+  context_payload?: Record<string, any>
   metrics?: Record<string, number>
   reasons?: Record<string, string>
   created_at: string
   updated_at?: string
+}
+
+export interface ConversationEvaluationTurnResult {
+  id: string
+  turn_id?: string
+  turn_index: number
+  question_text: string
+  expected_answer?: string
+  generated_answer?: string
+  metrics?: Record<string, number>
+  reasons?: Record<string, string>
+  context_payload?: Record<string, any>
+  dependency_type?: string
+  context_hint?: string
+  session_id_before?: string
+  session_id_after?: string
+}
+
+export interface ConversationEvaluationCaseResult {
+  case_id: string
+  case_result_id?: string | null
+  case_metrics?: Record<string, number>
+  case_reasons?: Record<string, string>
+  case_context?: string | null
+  case_title?: string
+  turns: ConversationEvaluationTurnResult[]
+  turn_count: number
 }
 
 export interface Configuration {
@@ -152,6 +266,8 @@ export interface TaskStatus {
   finished_at?: string | null
   can_cancel?: boolean
   can_retry?: boolean
+  context_info?: TaskContextInfo
+  contextInfo?: TaskContextInfo
 }
 
 export interface ApiStatus {

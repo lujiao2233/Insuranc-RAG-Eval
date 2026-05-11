@@ -22,38 +22,99 @@ from config.settings import settings
 logger = get_logger("advanced_testset_generator")
 
 
-def _invoke_llm(llm, prompt: str, stage: str = "", trace_id: str = "") -> str:
-    """统一的LLM调用函数，处理不同LLM类型的响应"""
+def _invoke_llm(llm, prompt: str, stage: str = "", trace_id: str = "", task_id: str = "", timeout: float = 120.0) -> str:
+    """统一的LLM调用函数，使用OpenAI兼容接口直接调用
+    
+    Args:
+        llm: LangChain ChatOpenAI实例（用于提取API配置）
+        task_id: 任务ID，传入后会在调用前检查取消状态
+        timeout: 单次LLM调用超时秒数，默认120s
+    """
+    import sys
+    if getattr(sys, "is_shutting_down", False):
+        raise RuntimeError("解释器正在关闭，终止LLM调用")
+
+    if task_id:
+        try:
+            from services.task_manager import task_manager
+            task_manager.ensure_not_cancelled(task_id)
+        except Exception:
+            raise
+
     prompt_len = len(str(prompt or ""))
     stage_label = stage or "unknown"
     trace_label = trace_id or "-"
     logger.info(f"LLM调用开始: stage={stage_label}, trace={trace_label}, prompt_len={prompt_len}")
     start_time = time.time()
     try:
-        result = llm.invoke(prompt)
+        from openai import OpenAI
+        _api_key = getattr(llm, 'openai_api_key', None)
+        if hasattr(_api_key, 'get_secret_value'):
+            api_key = _api_key.get_secret_value()
+        elif _api_key:
+            api_key = str(_api_key)
+        else:
+            api_key = os.environ.get("DASHSCOPE_API_KEY") or os.environ.get("QWEN_API_KEY")
+        base_url = str(getattr(llm, 'openai_api_base', '') or "https://dashscope.aliyuncs.com/compatible-mode/v1")
+        model_name = getattr(llm, 'model_name', '') or 'qwen-plus'
+        temperature = getattr(llm, 'temperature', 0.3) or 0.3
+        max_tokens = getattr(llm, 'max_tokens', None) or 2000
+        client = OpenAI(api_key=api_key, base_url=base_url)
+
+        import threading
+        result_container = {}
+        error_container = {}
+
+        def _do_invoke():
+            try:
+                completion = client.chat.completions.create(
+                    model=model_name,
+                    messages=[{"role": "user", "content": str(prompt)}],
+                    temperature=temperature,
+                    max_tokens=max_tokens,
+                )
+                result_container["result"] = completion
+            except Exception as e:
+                error_container["error"] = e
+
+        worker = threading.Thread(target=_do_invoke, daemon=True)
+        worker.start()
+        worker.join(timeout=timeout)
+
+        if worker.is_alive():
+            elapsed = time.time() - start_time
+            logger.error(f"LLM调用超时: stage={stage_label}, trace={trace_label}, timeout={timeout}s, elapsed={elapsed:.2f}s")
+            raise RuntimeError(f"LLM调用超时({timeout}s): stage={stage_label}")
+
+        if "error" in error_container:
+            raise error_container["error"]
+
+        completion = result_container.get("result")
         elapsed = time.time() - start_time
         logger.info(f"LLM调用完成: stage={stage_label}, trace={trace_label}, elapsed={elapsed:.2f}s")
-        
-        # 尝试记录Token
+
+        # 记录Token使用情况（与评估模块一致）
         try:
-            if hasattr(result, 'response_metadata'):
-                token_usage = result.response_metadata.get("token_usage")
-                model_name = result.response_metadata.get("model_name", "unknown")
-                if token_usage:
-                    from services.llm_service import log_token_usage
-                    import threading
-                    latency_ms = int(elapsed * 1000)
-                    threading.Thread(
-                        target=log_token_usage,
-                        args=("testset_gen", model_name, token_usage, latency_ms),
-                        daemon=True
-                    ).start()
+            if completion and hasattr(completion, "usage") and completion.usage:
+                from services.llm_service import log_token_usage
+                import threading
+                latency_ms = int(elapsed * 1000)
+                usage_dict = {
+                    "prompt_tokens": completion.usage.prompt_tokens,
+                    "completion_tokens": completion.usage.completion_tokens,
+                    "total_tokens": completion.usage.total_tokens
+                }
+                threading.Thread(
+                    target=log_token_usage,
+                    args=("testset_gen", model_name, usage_dict, latency_ms),
+                    daemon=True
+                ).start()
         except Exception as e:
             logger.error(f"记录生成测试集Token使用失败: {e}")
-            
-        if hasattr(result, 'content'):
-            return result.content
-        return str(result)
+
+        if completion and completion.choices:
+            return completion.choices[0].message.content or ""
+        return ""
     except Exception as e:
         elapsed = time.time() - start_time
         logger.error(f"LLM调用失败: stage={stage_label}, trace={trace_label}, elapsed={elapsed:.2f}s, error={e}")
@@ -677,6 +738,40 @@ def _extract_json(text: str) -> Optional[Dict[str, Any]]:
     return None
 
 
+def _build_chunk_context(chunk: Dict[str, Any], chunk_meta: Dict[str, Any]) -> str:
+    """构建单个切片的材料上下文（背景信息+正文），用于按文档生成模式"""
+    bg_field_map = [
+        ("product_name", "产品"),
+        ("product_entities", "相关产品实体"),
+        ("doc_type", "文档类型"),
+        ("purpose_summary", "文档用途"),
+        ("section_level", "章节层级"),
+        ("section_title", "章节"),
+        ("breadcrumb_path", "章节路径"),
+        ("knowledge_type", "知识类型"),
+        ("section_summary", "摘要"),
+        ("key_terms", "关键术语"),
+    ]
+    bg_lines = []
+    for key, label in bg_field_map:
+        value = chunk_meta.get(key)
+        if value is None or value == "":
+            continue
+        if isinstance(value, list):
+            if not value:
+                continue
+            value = "、".join(str(v) for v in value if v is not None and str(v).strip())
+            if not value:
+                continue
+        bg_lines.append(f"{label}: {value}")
+
+    content = str(chunk.get("content") or "").strip()
+    if bg_lines:
+        return "【背景信息】\n" + "\n".join(bg_lines) + "\n\n【正文】\n" + content
+    else:
+        return content
+
+
 def _analyze_doc_personas_with_qwen(
     lc_llm,
     outline: List[Dict[str, Any]],
@@ -1271,7 +1366,7 @@ class AdvancedTestsetGenerator:
         """获取API Key和配置，优先从数据库配置获取
         
         Returns:
-            tuple: (api_key, base_url, model)
+            tuple: (api_key, base_url, model, temperature, max_tokens)
             
         Raises:
             RuntimeError: 当无法获取API Key时抛出
@@ -1279,7 +1374,10 @@ class AdvancedTestsetGenerator:
         api_key = None
         base_url = "https://dashscope.aliyuncs.com/compatible-mode/v1"
         model = "qwen3-max"
-        
+        temperature = 0.3
+        max_tokens = 2000
+        concurrency = 3  # 并发LLM调用数，从配置读取
+
         if user_id:
             try:
                 from config.database import SessionLocal
@@ -1290,6 +1388,23 @@ class AdvancedTestsetGenerator:
                     api_key = cs.get_api_key(user_id, "qwen")
                     base_url = cs.get_config_value(user_id, "qwen.api_endpoint", base_url)
                     model = cs.get_config_value(user_id, "qwen.generation_model", model)
+                    # 从数据库读取 temperature 和 max_tokens
+                    temp_str = cs.get_config_value(user_id, "qwen.temperature", "0.3")
+                    try:
+                        temperature = float(temp_str)
+                    except (ValueError, TypeError):
+                        temperature = 0.3
+                    mt_str = cs.get_config_value(user_id, "qwen.max_tokens", "2000")
+                    try:
+                        max_tokens = int(float(mt_str))
+                    except (ValueError, TypeError):
+                        max_tokens = 2000
+                    # 从数据库读取并发生成数
+                    conc_str = cs.get_config_value(user_id, "generation.concurrency", "3")
+                    try:
+                        concurrency = max(1, min(10, int(float(conc_str))))
+                    except (ValueError, TypeError):
+                        concurrency = 3
                 finally:
                     db.close()
             except Exception as e:
@@ -1306,7 +1421,7 @@ class AdvancedTestsetGenerator:
                 "2. 设置环境变量 DASHSCOPE_API_KEY 或 QWEN_API_KEY"
             )
         
-        return api_key, base_url, model
+        return api_key, base_url, model, temperature, max_tokens, concurrency
     
     def _build_llm(self, user_id: str = None):
         """构建LLM实例，使用OpenAI兼容接口
@@ -1321,11 +1436,11 @@ class AdvancedTestsetGenerator:
             logger.info("LangChain OpenAI不可用，高级测试集生成器将跳过")
             raise RuntimeError("LangChain OpenAI不可用，请安装 langchain-openai 包")
         
-        api_key, base_url, model = self._get_api_key_and_config(user_id)
+        api_key, base_url, model, temperature, max_tokens, _concurrency = self._get_api_key_and_config(user_id)
         
         logger.info(
             f"构建LLM: user_id={user_id}, api_key={api_key[:8] if api_key else None}..., "
-            + f"model={model}, base_url={base_url}, timeout=60, max_retries=1"
+            + f"model={model}, base_url={base_url}, temperature={temperature}, max_tokens={max_tokens}, timeout=60, max_retries=1"
         )
         
         os.environ["DASHSCOPE_API_KEY"] = api_key
@@ -1333,7 +1448,8 @@ class AdvancedTestsetGenerator:
         
         return ChatOpenAI(
             model=model,
-            temperature=0.3,
+            temperature=temperature,
+            max_tokens=max_tokens,
             api_key=api_key,
             base_url=base_url,
             timeout=60,
@@ -1346,7 +1462,7 @@ class AdvancedTestsetGenerator:
         Raises:
             RuntimeError: 当无法获取API Key时抛出
         """
-        api_key, base_url, model = self._get_api_key_and_config(user_id)
+        api_key, base_url, model, _temp, _mt, _conc = self._get_api_key_and_config(user_id)
 
         if (
             self._llm is None
@@ -1882,13 +1998,43 @@ class AdvancedTestsetGenerator:
             major_target["鲁棒性/输入质量类"] = max(0, int(requested_size * 0.05))
             major_target["合规与安全类"] = max(0, int(requested_size * 0.05))
         minor_cap = max(1, int(max(requested_size, 1) * 0.2))
-        for idx, plan in enumerate(question_plans):
+        # 提取 task_id 用于取消检查
+        _gen_task_id = str(params.get("_task_id") or "")
+        from services.task_manager import TaskCancelledError as _TaskCancelledError
+
+        # ===== 并发生成优化 =====
+        # 将原串行循环改为：每个问题独立生成，多问题并发调用 LLM
+        _concurrency = max(1, min(10, int(params.get("_concurrency") or 3)))  # 从配置读取并发数
+        import threading
+        _usage_lock = threading.Lock()  # 保护 minor_usage/major_usage 的线程锁
+
+        def _generate_one_question(idx: int, plan: Dict[str, Any]) -> Optional[Dict[str, Any]]:
+            """生成单个问题（并发安全）。
+            
+            Returns:
+                成功时返回问题 dict，跳过/失败时返回 None
+            Raises:
+                _TaskCancelledError: 任务被取消
+                RuntimeError: 致命错误（解释器关闭等）
+            """
+            # 每次调用前检查取消状态
+            if _gen_task_id:
+                try:
+                    from services.task_manager import task_manager as _tm
+                    _tm.ensure_not_cancelled(_gen_task_id)
+                except _TaskCancelledError:
+                    raise
+                except Exception:
+                    pass
+
             is_multi = plan["type"] == "multi"
             num_docs = plan.get("num_docs", 1)
             trace_id = f"q{idx + 1}/{len(question_plans)}"
             if progress_cb:
                 try:
                     progress_cb(f"正在生成第 {idx + 1}/{len(question_plans)} 题")
+                except _TaskCancelledError:
+                    raise
                 except Exception:
                     pass
             logger.info(
@@ -2003,10 +2149,11 @@ class AdvancedTestsetGenerator:
                         ]
                         if requested_minor_whitelist:
                             pref_list = [p for p in pref_list if p.get("minor") in requested_minor_whitelist]
-                        pref_list = _rebalance_pref_by_major_quota(pref_list, major_usage, major_target)
-                        chosen_type = _pick_type_with_minor_cap(
-                            pref_list, minor_usage=minor_usage, minor_cap=minor_cap, top_n=5
-                        ) or _select_type_by_score(pref_list, top_n=3)
+                        with _usage_lock:
+                            pref_list = _rebalance_pref_by_major_quota(pref_list, major_usage, major_target)
+                            chosen_type = _pick_type_with_minor_cap(
+                                pref_list, minor_usage=minor_usage, minor_cap=minor_cap, top_n=5
+                            ) or _select_type_by_score(pref_list, top_n=3)
                         if chosen_type:
                             planned_major = chosen_type.get("major", "")
                             planned_minor = chosen_type.get("minor", "")
@@ -2048,10 +2195,11 @@ class AdvancedTestsetGenerator:
                     pref_list = _mapped_types_from_knowledge_type(chunk_meta.get("knowledge_type"), chosen_chunk.get("chunk") or "")
                     if requested_minor_whitelist:
                         pref_list = [p for p in pref_list if p.get("minor") in requested_minor_whitelist]
-                    pref_list = _rebalance_pref_by_major_quota(pref_list, major_usage, major_target)
-                    chosen_type = _pick_type_with_minor_cap(
-                        pref_list, minor_usage=minor_usage, minor_cap=minor_cap, top_n=5
-                    ) or _select_type_by_score(pref_list, top_n=3)
+                    with _usage_lock:
+                        pref_list = _rebalance_pref_by_major_quota(pref_list, major_usage, major_target)
+                        chosen_type = _pick_type_with_minor_cap(
+                            pref_list, minor_usage=minor_usage, minor_cap=minor_cap, top_n=5
+                        ) or _select_type_by_score(pref_list, top_n=3)
                     if chosen_type:
                         planned_major = chosen_type.get("major", "")
                         planned_minor = chosen_type.get("minor", "")
@@ -2084,13 +2232,14 @@ class AdvancedTestsetGenerator:
                     filtered_pref_list = _filter_pref_types_for_chunk(pref_list, ctx_text, chunk_meta)
                     if requested_minor_whitelist:
                         filtered_pref_list = [p for p in filtered_pref_list if p.get("minor") in requested_minor_whitelist]
-                    filtered_pref_list = _rebalance_pref_by_major_quota(filtered_pref_list, major_usage, major_target)
-                    chosen_type = _pick_type_with_minor_cap(
-                        filtered_pref_list,
-                        minor_usage=minor_usage,
-                        minor_cap=minor_cap,
-                        top_n=5
-                    ) or _select_type_by_score(filtered_pref_list, top_n=3)
+                    with _usage_lock:
+                        filtered_pref_list = _rebalance_pref_by_major_quota(filtered_pref_list, major_usage, major_target)
+                        chosen_type = _pick_type_with_minor_cap(
+                            filtered_pref_list,
+                            minor_usage=minor_usage,
+                            minor_cap=minor_cap,
+                            top_n=5
+                        ) or _select_type_by_score(filtered_pref_list, top_n=3)
                     if chosen_type:
                         planned_major = chosen_type.get("major", "")
                         planned_minor = chosen_type.get("minor", "")
@@ -2252,7 +2401,7 @@ class AdvancedTestsetGenerator:
                 logger.info(f"提示词分支: trace={trace_id}, mode=single_fallback_zh, prompt_len={len(prompt)}")
 
             try:
-                res = _invoke_llm(llm, prompt, stage="question_generate", trace_id=trace_id)
+                res = _invoke_llm(llm, prompt, stage="question_generate", trace_id=trace_id, task_id=_gen_task_id)
                 
                 text_res = str(res).strip()
                 obj = _extract_json(text_res)
@@ -2261,7 +2410,7 @@ class AdvancedTestsetGenerator:
                     logger.warning(
                         f"Qwen LLM 返回非JSON对象，无法解析: trace={trace_id}, index={idx + 1}, preview={preview[:200]}"
                     )
-                    continue
+                    return None
                 q_text = obj.get("question")
                 a_text = obj.get("ground_truth") or obj.get("expected_answer") or obj.get("answer")
                 
@@ -2295,12 +2444,13 @@ class AdvancedTestsetGenerator:
                         )
                     if not (final_major and final_minor):
                         if pref_list:
-                            fallback_pref = _pick_type_with_minor_cap(
-                                pref_list,
-                                minor_usage=minor_usage,
-                                minor_cap=minor_cap,
-                                top_n=5
-                            ) or _select_type_by_score(pref_list, top_n=3)
+                            with _usage_lock:
+                                fallback_pref = _pick_type_with_minor_cap(
+                                    pref_list,
+                                    minor_usage=minor_usage,
+                                    minor_cap=minor_cap,
+                                    top_n=5
+                                ) or _select_type_by_score(pref_list, top_n=3)
                             if fallback_pref:
                                 final_major = fallback_pref.get("major", default_major)
                                 final_minor = fallback_pref.get("minor", default_minor)
@@ -2314,15 +2464,16 @@ class AdvancedTestsetGenerator:
                             f"跳过问题: trace={trace_id}, reason=minor_not_in_whitelist, "
                             + f"final_minor={final_minor}, whitelist={sorted(list(requested_minor_whitelist))[:12]}"
                         )
-                        continue
+                        return None
                     if (final_major, final_minor) not in valid_type_pairs:
                         if pref_list:
-                            fallback = _pick_type_with_minor_cap(
-                                pref_list,
-                                minor_usage=minor_usage,
-                                minor_cap=minor_cap,
-                                top_n=5
-                            ) or _select_type_by_score(pref_list, top_n=3)
+                            with _usage_lock:
+                                fallback = _pick_type_with_minor_cap(
+                                    pref_list,
+                                    minor_usage=minor_usage,
+                                    minor_cap=minor_cap,
+                                    top_n=5
+                                ) or _select_type_by_score(pref_list, top_n=3)
                             if fallback:
                                 final_major = fallback.get("major", default_major)
                                 final_minor = fallback.get("minor", default_minor)
@@ -2330,38 +2481,39 @@ class AdvancedTestsetGenerator:
                                 final_major, final_minor = default_major, default_minor
                         else:
                             final_major, final_minor = default_major, default_minor
-                    if (not mapped_locked) and final_minor and minor_usage.get(final_minor, 0) >= minor_cap:
-                        if (not is_multi) and (not keyword_only_mode) and pref_list:
-                            alt = _pick_type_with_minor_cap(
-                                pref_list,
-                                minor_usage=minor_usage,
-                                minor_cap=minor_cap,
-                                top_n=5
-                            )
-                            if alt:
-                                final_major = alt.get("major", final_major)
-                                final_minor = alt.get("minor", final_minor)
-                            else:
-                                logger.info(
-                                    f"跳过问题: trace={trace_id}, reason=minor_cap_exceeded_no_alternative, final_minor={final_minor}, cap={minor_cap}"
+                    with _usage_lock:
+                        if (not mapped_locked) and final_minor and minor_usage.get(final_minor, 0) >= minor_cap:
+                            if (not is_multi) and (not keyword_only_mode) and pref_list:
+                                alt = _pick_type_with_minor_cap(
+                                    pref_list,
+                                    minor_usage=minor_usage,
+                                    minor_cap=minor_cap,
+                                    top_n=5
                                 )
-                                continue
-                        elif keyword_only_mode:
-                            logger.info(
-                                f"跳过问题: trace={trace_id}, reason=minor_cap_exceeded_keyword_mode, final_minor={final_minor}, cap={minor_cap}"
-                            )
-                            continue
+                                if alt:
+                                    final_major = alt.get("major", final_major)
+                                    final_minor = alt.get("minor", final_minor)
+                                else:
+                                    logger.info(
+                                        f"跳过问题: trace={trace_id}, reason=minor_cap_exceeded_no_alternative, final_minor={final_minor}, cap={minor_cap}"
+                                    )
+                                    return None
+                            elif keyword_only_mode:
+                                logger.info(
+                                    f"跳过问题: trace={trace_id}, reason=minor_cap_exceeded_keyword_mode, final_minor={final_minor}, cap={minor_cap}"
+                                )
+                                return None
                     logger.info(
                         f"类型定稿: trace={trace_id}, knowledge_type="
                         + f"{(chosen_chunk.get('chunk_metadata') or {}).get('knowledge_type') if (not is_multi and 'chosen_chunk' in locals()) else ''}, "
                         + f"mapped_locked={mapped_locked}, final_major={final_major}, final_minor={final_minor}"
                     )
-                    # 定义型问法优先归“定义解释”，避免被误分到事实召回/条件推理
+                    # 定义型问法优先归"定义解释"，避免被误分到事实召回/条件推理
                     if _is_definition_question(str(q_text)):
                         if (not requested_minor_whitelist) or ("定义解释" in requested_minor_whitelist):
                             if ("基础理解类", "定义解释") in valid_type_pairs:
                                 final_major, final_minor = "基础理解类", "定义解释"
-                    # 对边界问法优先归到“例外与边界判断”
+                    # 对边界问法优先归到"例外与边界判断"
                     if final_major == "推理与综合类" and re.search(r"除外|免责|不属于|不在.*范围|例外|是否属于", str(q_text)):
                         final_minor = "例外与边界判断"
                     if not _validate_question_type_alignment(str(q_text), final_major, final_minor):
@@ -2383,25 +2535,25 @@ class AdvancedTestsetGenerator:
                                 f"跳过问题: trace={trace_id}, reason=type_alignment_failed, "
                                 + f"final_major={final_major}, final_minor={final_minor}, question={str(q_text)[:120]}"
                             )
-                            continue
+                            return None
                     if final_major == "数值与计算类" and not _has_numeric_question_intent(str(q_text)):
                         logger.info(
                             f"跳过问题: trace={trace_id}, reason=numeric_type_but_non_numeric_question, "
                             + f"final_minor={final_minor}, question={str(q_text)[:120]}"
                         )
-                        continue
+                        return None
                     if (not enable_safety_robustness) and final_major in ("鲁棒性/输入质量类", "合规与安全类"):
                         logger.info(
                             f"跳过安全/鲁棒性问题: index={idx + 1}, category_major={final_major}, category_minor={final_minor}"
                         )
-                        continue
+                        return None
 
                     if enable_self_check:
                         qa_check = {"question": q_text, "ground_truth": a_text, "expected_answer": a_text}
                         if final_major == "合规与安全类":
                             if not _safety_self_check(qa_check, llm):
                                 logger.warning(f"Qwen LLM 安全合规自检未通过: index={idx + 1}")
-                                continue
+                                return None
                         elif keyword_only_mode and final_major == "鲁棒性/输入质量类":
                             pass
                         else:
@@ -2417,9 +2569,22 @@ class AdvancedTestsetGenerator:
                             passed, fail_reason = _combined_self_check(qa_check, ctx, product_name_for_check, llm)
                             if not passed:
                                 logger.warning(f"Qwen LLM 合并自检未通过: index={idx + 1}, reason={fail_reason}")
-                                continue
+                                return None
 
-                    questions.append({
+                    # 更新 minor_usage / major_usage（线程安全）
+                    with _usage_lock:
+                        if final_minor:
+                            minor_usage[final_minor] = minor_usage.get(final_minor, 0) + 1
+                        if final_major:
+                            major_usage[final_major] = major_usage.get(final_major, 0) + 1
+
+                    logger.info(
+                        f"问题生成成功: trace={trace_id}, final_major={final_major}, final_minor={final_minor}, "
+                        + f"question_len={len(str(q_text))}, answer_len={len(str(a_text))}, "
+                        + f"minor_usage={minor_usage.get(final_minor, 0)}, major_usage={major_usage.get(final_major, 0)}, minor_cap={minor_cap}"
+                    )
+                    
+                    return {
                         "question": q_text,
                         "question_type": final_minor,
                         "category_major": final_major,
@@ -2427,25 +2592,57 @@ class AdvancedTestsetGenerator:
                         "expected_answer": a_text,
                         "context": ctx,
                         "metadata": meta
-                    })
-                    if final_minor:
-                        minor_usage[final_minor] = minor_usage.get(final_minor, 0) + 1
-                    if final_major:
-                        major_usage[final_major] = major_usage.get(final_major, 0) + 1
-                    logger.info(
-                        f"问题生成成功: trace={trace_id}, final_major={final_major}, final_minor={final_minor}, "
-                        + f"question_len={len(str(q_text))}, answer_len={len(str(a_text))}, "
-                        + f"minor_usage={minor_usage.get(final_minor, 0)}, major_usage={major_usage.get(final_major, 0)}, minor_cap={minor_cap}"
-                    )
+                    }
                 else:
                     logger.warning(
                         f"跳过问题: trace={trace_id}, reason=missing_required_fields, "
                         + f"has_question={bool(q_text)}, has_answer={bool(a_text)}, "
                         + f"keys={list(obj.keys()) if isinstance(obj, dict) else []}"
                     )
+                    return None
+            except _TaskCancelledError:
+                logger.info(f"问题生成被取消: trace={trace_id}, index={idx}")
+                raise
             except Exception as e:
+                # 不可重试的致命错误：解释器关闭、服务器关闭
+                err_msg = str(e)
+                if any(kw in err_msg for kw in ("interpreter shutdown", "解释器正在关闭", "服务器正在关闭")):
+                    logger.error(f"问题生成遇到致命错误，终止: trace={trace_id}, error={e}")
+                    raise
                 logger.error(f"问题生成失败: trace={trace_id}, index={idx}, error={e}")
-                continue
+                return None
+        # ===== 并发生成优化结束 =====
+
+        # 分批并发执行问题生成
+        from concurrent.futures import ThreadPoolExecutor, as_completed
+        logger.info(f"并发生成启动: 总计划={len(question_plans)}题, 并发数={_concurrency}")
+        
+        with ThreadPoolExecutor(max_workers=_concurrency) as executor:
+            _future_to_idx = {
+                executor.submit(_generate_one_question, idx, plan): idx
+                for idx, plan in enumerate(question_plans)
+            }
+            for _future in as_completed(_future_to_idx):
+                _fi = _future_to_idx[_future]
+                try:
+                    _q_result = _future.result()
+                    if _q_result is not None:
+                        questions.append(_q_result)
+                        # 立即保存 checkpoint
+                        _checkpoint = params.get("_checkpoint_callback")
+                        if callable(_checkpoint):
+                            try:
+                                _checkpoint(_q_result)
+                            except Exception as _ckpt_err:
+                                logger.warning(f"Checkpoint 保存失败: {_ckpt_err}")
+                except _TaskCancelledError:
+                    raise
+                except Exception as e:
+                    err_msg = str(e)
+                    if any(kw in err_msg for kw in ("interpreter shutdown", "解释器正在关闭", "服务器正在关闭")):
+                        raise
+                    logger.error(f"并发生成异常: idx={_fi}, error={e}")
+
 
         logger.info(
             f"Qwen LLM 生成模式完成: 计划问题数={requested_size}, 实际成功问题数={len(questions)}"
@@ -2458,6 +2655,379 @@ class AdvancedTestsetGenerator:
         }
         
         return result
+
+    def _generate_per_doc_mode(
+        self,
+        content: Any,
+        params: Dict[str, Any]
+    ) -> Dict[str, Any]:
+        """
+        按文档生成模式：每个文档独立生成指定数量的题目。
+        - 禁用多文档关联类、鲁棒性/安全类
+        - 不做题型配额分配，题型由LLM根据内容自然判定
+        - 自检不通过时重试（最多3次），换chunk重新生成
+        - 支持断点续传：跳过已完成的文档，从中断处继续
+        """
+        user_id = params.get("user_id")
+        questions_per_doc = int(params.get("questions_per_doc") or 5)
+        enable_self_check = bool(params.get("enable_self_check", True))
+        max_retries = 3
+        warnings: List[str] = []
+        
+        # 断点续传：读取每个文档已生成的问题数
+        per_doc_progress: Dict[str, int] = {}
+        try:
+            per_doc_progress = dict(params.get("_per_doc_progress") or {})
+        except Exception:
+            per_doc_progress = {}
+
+        progress_cb = None
+        try:
+            cb = params.get("_progress_callback")
+            if callable(cb):
+                progress_cb = cb
+        except Exception:
+            progress_cb = None
+
+        llm = self._get_llm(user_id)
+        if not llm:
+            error_msg = "按文档生成模式初始化失败: 无法构建LLM客户端"
+            logger.error(error_msg)
+            raise RuntimeError(error_msg)
+
+        # ---- 解析切片输入 ----
+        chunks_in: List[Dict[str, Any]] = []
+        if isinstance(content, list):
+            for item in content:
+                if isinstance(item, dict):
+                    chunks_in.append({
+                        "content": item.get("content") or item.get("text") or "",
+                        "chunk_id": item.get("chunk_id") or "",
+                        "doc_id": item.get("doc_id") or "",
+                        "filename": item.get("filename") or "",
+                        "metadata": item.get("metadata") or item.get("chunk_metadata") or {},
+                        "sequence_number": item.get("sequence_number"),
+                        "start_char": item.get("start_char"),
+                        "end_char": item.get("end_char")
+                    })
+
+        if not chunks_in:
+            logger.error("按文档生成模式: 未检测到有效切片输入")
+            return {"questions": [], "count": 0, "warnings": ["未检测到有效切片输入"]}
+
+        # ---- 按文档分组 ----
+        chunks_by_doc: Dict[str, List[Dict[str, Any]]] = {}
+        filenames_by_doc: Dict[str, str] = {}
+        for ch in chunks_in:
+            doc_id = str(ch.get("doc_id") or "")
+            if not doc_id:
+                continue
+            if doc_id not in chunks_by_doc:
+                chunks_by_doc[doc_id] = []
+            chunks_by_doc[doc_id].append(ch)
+            if doc_id not in filenames_by_doc and ch.get("filename"):
+                filenames_by_doc[doc_id] = ch["filename"]
+
+        doc_keys = list(chunks_by_doc.keys())
+        logger.info(f"按文档生成模式启动: 文档数={len(doc_keys)}, 每文档={questions_per_doc}题")
+
+        # ---- 从 metadata 提取分析结果 ----
+        analysis_result = _extract_analysis_from_metadata(chunks_in)
+        doc_product_names_display: Dict[int, List[str]] = analysis_result.get("doc_product_names_display", {})
+
+        # ---- 遍历每个文档生成题目 ----
+        all_questions: List[Dict[str, Any]] = []
+        total_planned = len(doc_keys) * questions_per_doc
+        # 提取 task_id 用于取消检查
+        _per_doc_task_id = str(params.get("_task_id") or "")
+        from services.task_manager import TaskCancelledError as _TaskCancelledError
+
+        for doc_idx, doc_id in enumerate(doc_keys):
+            # 每个文档前检查取消状态
+            if _per_doc_task_id:
+                try:
+                    from services.task_manager import task_manager as _tm
+                    _tm.ensure_not_cancelled(_per_doc_task_id)
+                except _TaskCancelledError:
+                    raise
+                except Exception:
+                    pass
+
+            # 断点续传：检查该文档已生成的问题数
+            already_generated_for_doc = per_doc_progress.get(doc_id, 0)
+            if already_generated_for_doc >= questions_per_doc:
+                logger.info(f"断点续传: 文档 {doc_id} 已完成 {already_generated_for_doc} 题，跳过")
+                continue
+            
+            remaining_for_doc = questions_per_doc - already_generated_for_doc
+            if already_generated_for_doc > 0:
+                logger.info(f"断点续传: 文档 {doc_id} 已有 {already_generated_for_doc} 题，还需生成 {remaining_for_doc} 题")
+
+            doc_chunks = chunks_by_doc[doc_id]
+            doc_filename = filenames_by_doc.get(doc_id, f"文档{doc_idx + 1}")
+            doc_product_name = ""
+            if doc_idx in doc_product_names_display and doc_product_names_display[doc_idx]:
+                doc_product_name = doc_product_names_display[doc_idx][0]
+
+            generated_for_doc = 0
+
+            # ---- 并发生成：同一文档内多个问题并发调用 LLM ----
+            _per_doc_concurrency = max(1, min(10, int(params.get("_concurrency") or 3)))  # 从配置读取并发数
+
+            def _generate_one_per_doc(q_idx: int) -> Optional[Dict[str, Any]]:
+                """为当前文档生成单个问题（并发安全）"""
+                # q_idx 是相对于剩余问题的索引，实际问题是 already_generated_for_doc + q_idx + 1
+                actual_q_num = already_generated_for_doc + q_idx + 1
+                trace_id = f"doc{doc_idx + 1}/{len(doc_keys)}_q{actual_q_num}/{questions_per_doc}"
+                if progress_cb:
+                    try:
+                        progress_cb(f"正在为 {doc_filename} 生成第 {actual_q_num}/{questions_per_doc} 题")
+                    except _TaskCancelledError:
+                        raise
+                    except Exception:
+                        pass
+
+                # 检查取消状态
+                if _per_doc_task_id:
+                    try:
+                        from services.task_manager import task_manager as _tm
+                        _tm.ensure_not_cancelled(_per_doc_task_id)
+                    except _TaskCancelledError:
+                        raise
+                    except Exception:
+                        pass
+
+                # 轮换选取 chunk
+                chunk_pos = q_idx % len(doc_chunks) if doc_chunks else 0
+                chunk = doc_chunks[chunk_pos] if doc_chunks else None
+                if not chunk:
+                    return None
+
+                chunk_text = str(chunk.get("content") or "").strip()
+                chunk_meta = chunk.get("metadata") or {}
+                if not chunk_text:
+                    chunk_pos = (chunk_pos + 1) % len(doc_chunks)
+                    chunk = doc_chunks[chunk_pos]
+                    chunk_text = str(chunk.get("content") or "").strip()
+                    if not chunk_text:
+                        return None
+
+                product_name_for_check = chunk_meta.get("product_name") or doc_product_name
+
+                # 构建上下文
+                ctx = _build_chunk_context(chunk, chunk_meta)
+
+                # 从metadata中提取knowledge_type并映射到问题类型
+                planned_major = ""
+                planned_minor = ""
+                knowledge_type = chunk_meta.get("knowledge_type")
+                if knowledge_type:
+                    try:
+                        pref_list = _mapped_types_from_knowledge_type(knowledge_type, chunk_text)
+                        if pref_list:
+                            # 随机选择一个合适的问题类型
+                            chosen_type = random.choice(pref_list)
+                            planned_major = str(chosen_type.get("major") or "").strip()
+                            planned_minor = str(chosen_type.get("minor") or "").strip()
+                            logger.info(f"按文档生成类型规划: trace={trace_id}, knowledge_type={knowledge_type}, planned_major={planned_major}, planned_minor={planned_minor}")
+                    except Exception as e:
+                        logger.warning(f"按文档生成类型映射失败: trace={trace_id}, knowledge_type={knowledge_type}, error={e}")
+
+                # 构建提示词 - 添加题型约束
+                req_1 = "1) 问题必须保证只依赖'材料'中【正文】部分的内容即可回答"
+                req_product = ""
+                if product_name_for_check:
+                    req_product = f"如果问题涉及具体产品，请引用产品名称：{product_name_for_check}"
+                
+                req_type = ""
+                if planned_major and planned_minor:
+                    req_type = f"\n   > 特别要求：请生成一个【{planned_major} - {planned_minor}】类型的问题。"
+                    if planned_major == "数值与计算类":
+                        req_type += " 重点考察数字提取、计算或统计，但提问方式要像普通用户咨询，不要使用'请计算''请用……形式'等命令式说法。"
+                    elif planned_major == "推理与综合类":
+                        req_type += " 重点考察逻辑推演或信息整合，避免直接原文摘抄，同时保持问题表述自然。"
+                    elif planned_major == "基础理解类":
+                        req_type += " 重点考察术语、字段或章节信息的准确理解，避免引入额外推理。"
+
+                prompt = _build_generation_prompt(
+                    sys_prefix="你是一名专业的RAG测试集生成助手。",
+                    persona_prompt="",
+                    goal_line="生成 1 条测试样本，用于中文场景问答评估。",
+                    req_1=req_1,
+                    req_product=req_product,
+                    req_type=req_type,
+                    ctx=ctx,
+                    mode="single"
+                )
+
+                # 带重试的生成循环
+                for retry in range(max_retries + 1):
+                    try:
+                        res = _invoke_llm(llm, prompt, stage="per_doc_generate", trace_id=trace_id, task_id=_per_doc_task_id)
+                        text_res = str(res).strip()
+                        obj = _extract_json(text_res)
+                        if not isinstance(obj, dict):
+                            if retry < max_retries:
+                                logger.warning(f"按文档生成: JSON解析失败，重试{retry + 1}/{max_retries}, trace={trace_id}")
+                                continue
+                            else:
+                                return None
+
+                        q_text = obj.get("question")
+                        a_text = obj.get("ground_truth") or obj.get("expected_answer") or obj.get("answer")
+
+                        if not (q_text and a_text):
+                            if retry < max_retries:
+                                continue
+                            else:
+                                return None
+
+                        final_major = str(obj.get("category_major") or "").strip()
+                        final_minor = str(obj.get("category_minor") or "").strip()
+
+                        # 禁止多文档关联类
+                        if final_major == "多文档关联类":
+                            final_major = "基础理解类"
+
+                        # 自检
+                        if enable_self_check:
+                            qa_check = {"question": q_text, "ground_truth": a_text, "expected_answer": a_text}
+                            passed, fail_reason = _combined_self_check(qa_check, ctx, product_name_for_check, llm)
+                            if not passed:
+                                logger.warning(f"按文档生成自检未通过: trace={trace_id}, retry={retry}, reason={fail_reason}")
+                                if retry < max_retries:
+                                    # 换一个chunk重试
+                                    next_chunk_pos = (chunk_pos + retry + 1) % len(doc_chunks)
+                                    next_chunk = doc_chunks[next_chunk_pos]
+                                    next_text = str(next_chunk.get("content") or "").strip()
+                                    if next_text:
+                                        chunk = next_chunk
+                                        chunk_text = next_text
+                                        chunk_meta = next_chunk.get("metadata") or {}
+                                        ctx = _build_chunk_context(chunk, chunk_meta)
+                                        product_name_for_check = chunk_meta.get("product_name") or doc_product_name
+                                        
+                                        # 重新规划问题类型
+                                        planned_major_retry = ""
+                                        planned_minor_retry = ""
+                                        knowledge_type_retry = chunk_meta.get("knowledge_type")
+                                        if knowledge_type_retry:
+                                            try:
+                                                pref_list_retry = _mapped_types_from_knowledge_type(knowledge_type_retry, chunk_text)
+                                                if pref_list_retry:
+                                                    chosen_type_retry = random.choice(pref_list_retry)
+                                                    planned_major_retry = str(chosen_type_retry.get("major") or "").strip()
+                                                    planned_minor_retry = str(chosen_type_retry.get("minor") or "").strip()
+                                            except Exception:
+                                                pass
+                                        
+                                        # 重建提示词
+                                        req_product = ""
+                                        if product_name_for_check:
+                                            req_product = f"如果问题涉及具体产品，请引用产品名称：{product_name_for_check}"
+                                        
+                                        req_type_retry = ""
+                                        if planned_major_retry and planned_minor_retry:
+                                            req_type_retry = f"\n   > 特别要求：请生成一个【{planned_major_retry} - {planned_minor_retry}】类型的问题。"
+                                            if planned_major_retry == "数值与计算类":
+                                                req_type_retry += " 重点考察数字提取、计算或统计，但提问方式要像普通用户咨询，不要使用'请计算''请用……形式'等命令式说法。"
+                                            elif planned_major_retry == "推理与综合类":
+                                                req_type_retry += " 重点考察逻辑推演或信息整合，避免直接原文摘抄，同时保持问题表述自然。"
+                                            elif planned_major_retry == "基础理解类":
+                                                req_type_retry += " 重点考察术语、字段或章节信息的准确理解，避免引入额外推理。"
+                                        
+                                        prompt = _build_generation_prompt(
+                                            sys_prefix="你是一名专业的RAG测试集生成助手。",
+                                            persona_prompt="",
+                                            goal_line="生成 1 条测试样本，用于中文场景问答评估。",
+                                            req_1=req_1,
+                                            req_product=req_product,
+                                            req_type=req_type_retry,
+                                            ctx=ctx,
+                                            mode="single"
+                                        )
+                                    continue
+                                else:
+                                    return None
+
+                        # 生成成功
+                        meta: Dict[str, Any] = {
+                            "source": "per_doc_generator",
+                            "generated_at": datetime.now().isoformat(),
+                            "doc_id": doc_id,
+                            "filename": doc_filename,
+                            "chunk_id": str(chunk.get("chunk_id") or ""),
+                        }
+
+                        logger.info(f"按文档生成成功: trace={trace_id}, major={final_major}, minor={final_minor}")
+                        return {
+                            "question": q_text,
+                            "question_type": final_minor,
+                            "category_major": final_major,
+                            "category_minor": final_minor,
+                            "expected_answer": a_text,
+                            "context": ctx,
+                            "metadata": meta
+                        }
+
+                    except _TaskCancelledError:
+                        logger.info(f"按文档生成被取消: trace={trace_id}, retry={retry}")
+                        raise
+                    except Exception as e:
+                        # 不可重试的致命错误：解释器关闭、服务器关闭
+                        err_msg = str(e)
+                        if any(kw in err_msg for kw in ("interpreter shutdown", "解释器正在关闭", "服务器正在关闭")):
+                            logger.error(f"按文档生成遇到致命错误，终止: trace={trace_id}, error={e}")
+                            raise
+                        logger.error(f"按文档生成异常: trace={trace_id}, retry={retry}, error={e}")
+                        if retry < max_retries:
+                            continue
+                        else:
+                            return None
+                return None
+
+            # 并发执行同一文档内的问题生成（只生成剩余数量）
+            from concurrent.futures import ThreadPoolExecutor, as_completed
+            with ThreadPoolExecutor(max_workers=_per_doc_concurrency) as executor:
+                _q_futures = {
+                    executor.submit(_generate_one_per_doc, q_idx): q_idx
+                    for q_idx in range(remaining_for_doc)
+                }
+                for _qf in as_completed(_q_futures):
+                    _qi = _q_futures[_qf]
+                    try:
+                        _q_result = _qf.result()
+                        if _q_result is not None:
+                            all_questions.append(_q_result)
+                            generated_for_doc += 1
+                            # 立即保存 checkpoint
+                            _checkpoint = params.get("_checkpoint_callback")
+                            if callable(_checkpoint):
+                                try:
+                                    _checkpoint(_q_result)
+                                except Exception as _ckpt_err:
+                                    logger.warning(f"Checkpoint 保存失败: {_ckpt_err}")
+                    except _TaskCancelledError:
+                        raise
+                    except Exception as e:
+                        err_msg = str(e)
+                        if any(kw in err_msg for kw in ("interpreter shutdown", "解释器正在关闭", "服务器正在关闭")):
+                            raise
+                        logger.error(f"按文档并发生成异常: doc={doc_filename}, q_idx={_qi}, error={e}")
+                        warnings.append(f"{doc_filename} 第{_qi + 1}题生成失败")
+
+            logger.info(f"文档 {doc_filename} 生成完成: 目标{questions_per_doc}题, 实际{generated_for_doc}题")
+
+        logger.info(
+            f"按文档生成模式完成: 文档数={len(doc_keys)}, "
+            f"每文档目标={questions_per_doc}, 实际总题数={len(all_questions)}"
+        )
+
+        return {
+            "questions": all_questions,
+            "count": len(all_questions),
+            "warnings": warnings
+        }
     
     def _build_embeddings(self, user_id: str = None):
         """构建嵌入模型"""
@@ -2468,7 +3038,7 @@ class AdvancedTestsetGenerator:
             logger.warning("DashScope不可用，无法构建嵌入模型")
             return None
         
-        api_key, _, _ = self._get_api_key_and_config(user_id)
+        api_key, _, _, _, _, _ = self._get_api_key_and_config(user_id)
         if not api_key:
             return None
             
@@ -2678,7 +3248,10 @@ class AdvancedTestsetGenerator:
         Returns:
             包含 questions, count, warnings 的字典
         """
-        # 仅保留 qwen_llm 生成分支
+        distribution_mode = str(params.get("distribution_mode") or "total").strip()
+        if distribution_mode == "per_doc":
+            return self._generate_per_doc_mode(content, params)
+        # 默认：按总量生成
         return self._generate_with_qwen_llm(content, params)
     
     def generate_testset_async(
@@ -2712,7 +3285,11 @@ class AdvancedTestsetGenerator:
             task_manager.update_progress(task_id, 0.0, "正在初始化生成器...")
             task_manager.append_log(task_id, "初始化生成器...")
             
-            result = self.generate_testset(content, params, progress_callback)
+            # 注入 task_id 到 params，供生成循环取消检查使用
+            params_with_task_id = dict(params)
+            params_with_task_id["_task_id"] = task_id
+            
+            result = self.generate_testset(content, params_with_task_id, progress_callback)
             
             if isinstance(result, dict):
                 questions = result.get("questions", [])

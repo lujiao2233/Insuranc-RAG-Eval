@@ -18,20 +18,202 @@ def calc_percentile(data: List[int], percentile: int) -> int:
     return sorted(data)[int(math.ceil((size * percentile) / 100)) - 1]
 
 def estimate_cost(model_name: str, prompt_tokens: int, completion_tokens: int) -> float:
-    # 估算价格 (元 / 1M tokens)，来源于当前常用模型单价
-    prices = {
-        # 常用模型
-        "qwen3-max": {"in": 7.0, "out": 28.0},
-        "qwen3.6-plus": {"in": 2.0, "out": 12.0},
-        "qwen-flash": {"in": 0.6, "out": 6.0},
-        "qwen3.5-flash": {"in": 0.8, "out": 8.0},
-        # 兼容历史模型名
-        "qwen-plus": {"in": 2.0, "out": 12.0},
-        "qwen-turbo": {"in": 0.6, "out": 6.0}
+    """
+    根据阿里云百炼阶梯计费规则估算成本（中国内地 普通调用）
+    阶梯计费：单价取决于单次请求的输入 Token 总量，该请求所有 Token 均按对应阶梯单价结算
+    """
+    # 定义各模型的阶梯计费规则 (单位: 元/百万Token)
+    tiered_prices = {
+        # 千问Plus系列
+        "qwen3.6-plus": {
+            "tiers": [
+                {"max_tokens": 256_000, "in": 2.0, "out": 12.0},
+                {"max_tokens": 1_000_000, "in": 8.0, "out": 48.0},
+            ]
+        },
+        "qwen3.6-plus-2026-04-02": {
+            "tiers": [
+                {"max_tokens": 256_000, "in": 2.0, "out": 12.0},
+                {"max_tokens": 1_000_000, "in": 8.0, "out": 48.0},
+            ]
+        },
+        "qwen3.5-plus": {
+            "tiers": [
+                {"max_tokens": 128_000, "in": 0.8, "out": 4.8},
+                {"max_tokens": 256_000, "in": 2.0, "out": 12.0},
+                {"max_tokens": 1_000_000, "in": 4.0, "out": 24.0},
+            ]
+        },
+        "qwen3.5-plus-2026-02-15": {
+            "tiers": [
+                {"max_tokens": 128_000, "in": 0.8, "out": 4.8},
+                {"max_tokens": 256_000, "in": 2.0, "out": 12.0},
+                {"max_tokens": 1_000_000, "in": 4.0, "out": 24.0},
+            ]
+        },
+        "qwen-plus": {
+            "tiers": [
+                {"max_tokens": 128_000, "in": 0.8, "out": 2.0},
+                {"max_tokens": 256_000, "in": 2.4, "out": 20.0},
+                {"max_tokens": 1_000_000, "in": 4.8, "out": 48.0},
+            ]
+        },
+        "qwen-plus-latest": {
+            "tiers": [
+                {"max_tokens": 128_000, "in": 0.8, "out": 2.0},
+                {"max_tokens": 256_000, "in": 2.4, "out": 20.0},
+                {"max_tokens": 1_000_000, "in": 4.8, "out": 48.0},
+            ]
+        },
+        "qwen-plus-2025-12-01": {
+            "tiers": [
+                {"max_tokens": 128_000, "in": 0.8, "out": 2.0},
+                {"max_tokens": 256_000, "in": 2.4, "out": 20.0},
+                {"max_tokens": 1_000_000, "in": 4.8, "out": 48.0},
+            ]
+        },
+        "qwen-plus-2025-09-11": {
+            "tiers": [
+                {"max_tokens": 128_000, "in": 0.8, "out": 2.0},
+                {"max_tokens": 256_000, "in": 2.4, "out": 20.0},
+                {"max_tokens": 1_000_000, "in": 4.8, "out": 48.0},
+            ]
+        },
+        "qwen-plus-2025-07-28": {
+            "tiers": [
+                {"max_tokens": 128_000, "in": 0.8, "out": 2.0},
+                {"max_tokens": 256_000, "in": 2.4, "out": 20.0},
+                {"max_tokens": 1_000_000, "in": 4.8, "out": 48.0},
+            ]
+        },
+        "qwen-plus-2025-07-14": {"in": 0.8, "out": 2.0},  # 无阶梯
+        "qwen-plus-2025-04-28": {"in": 0.8, "out": 2.0},  # 无阶梯
+        "qwen-plus-2025-01-25": {"in": 0.8, "out": 2.0},  # 无阶梯
+        "qwen-plus-2025-01-12": {"in": 0.8, "out": 2.0},  # 无阶梯
+        "qwen-plus-2024-12-20": {"in": 0.8, "out": 2.0},  # 无阶梯
+        # 千问Max系列
+        "qwen3.6-max-preview": {
+            "tiers": [
+                {"max_tokens": 128_000, "in": 9.0, "out": 54.0},
+                {"max_tokens": 256_000, "in": 15.0, "out": 90.0},
+            ]
+        },
+        "qwen3-max": {
+            "tiers": [
+                {"max_tokens": 32_000, "in": 2.5, "out": 10.0},
+                {"max_tokens": 128_000, "in": 4.0, "out": 16.0},
+                {"max_tokens": 252_000, "in": 7.0, "out": 28.0},
+            ]
+        },
+        "qwen3-max-2026-01-23": {
+            "tiers": [
+                {"max_tokens": 32_000, "in": 2.5, "out": 10.0},
+                {"max_tokens": 128_000, "in": 4.0, "out": 16.0},
+                {"max_tokens": 252_000, "in": 7.0, "out": 28.0},
+            ]
+        },
+        "qwen3-max-2025-09-23": {
+            "tiers": [
+                {"max_tokens": 32_000, "in": 6.0, "out": 24.0},
+                {"max_tokens": 128_000, "in": 10.0, "out": 40.0},
+                {"max_tokens": 252_000, "in": 15.0, "out": 60.0},
+            ]
+        },
+        "qwen3-max-preview": {
+            "tiers": [
+                {"max_tokens": 32_000, "in": 6.0, "out": 24.0},
+                {"max_tokens": 128_000, "in": 10.0, "out": 40.0},
+                {"max_tokens": 252_000, "in": 15.0, "out": 60.0},
+            ]
+        },
+        # 无阶梯的Max模型
+        "qwen-max": {"in": 2.4, "out": 9.6},
+        "qwen-max-latest": {"in": 2.4, "out": 9.6},
+        "qwen-max-2025-01-25": {"in": 2.4, "out": 9.6},
+        "qwen-max-2024-09-19": {"in": 20.0, "out": 60.0},
+        "qwen-max-2024-04-28": {"in": 40.0, "out": 120.0},
+        # 千问Flash系列
+        "qwen3.6-flash": {
+            "tiers": [
+                {"max_tokens": 256_000, "in": 1.2, "out": 7.2},
+                {"max_tokens": 1_000_000, "in": 4.8, "out": 28.8},
+            ]
+        },
+        "qwen3.6-flash-2026-04-16": {
+            "tiers": [
+                {"max_tokens": 256_000, "in": 1.2, "out": 7.2},
+                {"max_tokens": 1_000_000, "in": 4.8, "out": 28.8},
+            ]
+        },
+        "qwen3.5-flash": {
+            "tiers": [
+                {"max_tokens": 128_000, "in": 0.2, "out": 2.0},
+                {"max_tokens": 256_000, "in": 0.8, "out": 8.0},
+                {"max_tokens": 1_000_000, "in": 1.2, "out": 12.0},
+            ]
+        },
+        "qwen3.5-flash-2026-02-23": {
+            "tiers": [
+                {"max_tokens": 128_000, "in": 0.2, "out": 2.0},
+                {"max_tokens": 256_000, "in": 0.8, "out": 8.0},
+                {"max_tokens": 1_000_000, "in": 1.2, "out": 12.0},
+            ]
+        },
+        "qwen-flash": {
+            "tiers": [
+                {"max_tokens": 128_000, "in": 0.15, "out": 1.5},
+                {"max_tokens": 256_000, "in": 0.6, "out": 6.0},
+                {"max_tokens": 1_000_000, "in": 1.2, "out": 12.0},
+            ]
+        },
+        "qwen-flash-2025-07-28": {
+            "tiers": [
+                {"max_tokens": 128_000, "in": 0.15, "out": 1.5},
+                {"max_tokens": 256_000, "in": 0.6, "out": 6.0},
+                {"max_tokens": 1_000_000, "in": 1.2, "out": 12.0},
+            ]
+        },
+        # 千问Turbo系列 (无阶梯)
+        "qwen-turbo": {"in": 0.3, "out": 0.6},
+        "qwen-turbo-latest": {"in": 0.3, "out": 0.6},
+        "qwen-turbo-2025-07-15": {"in": 0.3, "out": 0.6},
+        "qwen-turbo-2025-04-28": {"in": 0.3, "out": 0.6},
+        "qwen-turbo-2025-02-11": {"in": 0.3, "out": 0.6},
+        "qwen-turbo-2024-11-01": {"in": 0.3, "out": 0.6},
+        # QwQ 思考模型 (无阶梯)
+        "qwq-plus": {"in": 1.6, "out": 4.0},
+        "qwq-plus-latest": {"in": 1.6, "out": 4.0},
+        "qwq-plus-2025-03-05": {"in": 1.6, "out": 4.0},
+        # 第三方模型 (无阶梯)
+        "deepseek-v3.2": {"in": 2.0, "out": 3.0},
+        "deepseek-v3": {"in": 2.0, "out": 8.0},
+        "glm-5": {"in": 1.0, "out": 4.0},
+        "glm-5.1": {"in": 6.0, "out": 24.0},
+        "glm-4-plus": {"in": 5.0, "out": 5.0},
+        "glm-4-flash": {"in": 0.0, "out": 0.0},
     }
-    # 未命中时给一个保守默认值（按 qwen-flash 估算）
-    price = prices.get(model_name, {"in": 0.6, "out": 6.0})
-    return (prompt_tokens / 1_000_000 * price["in"]) + (completion_tokens / 1_000_000 * price["out"])
+
+    # 获取该模型的价格配置
+    price_config = tiered_prices.get(model_name, {"in": 0.15, "out": 1.5})  # 默认按 qwen-flash 最低价
+
+    # 如果有阶梯计价，根据 prompt_tokens 选择对应阶梯
+    if "tiers" in price_config:
+        tiers = price_config["tiers"]
+        # 找到 prompt_tokens 所在的阶梯
+        selected_tier = tiers[-1]  # 默认使用最高阶梯
+        for tier in tiers:
+            if prompt_tokens <= tier["max_tokens"]:
+                selected_tier = tier
+                break
+        
+        price_in = selected_tier["in"]
+        price_out = selected_tier["out"]
+    else:
+        # 无阶梯计价，直接使用固定单价
+        price_in = price_config["in"]
+        price_out = price_config["out"]
+
+    return (prompt_tokens / 1_000_000 * price_in) + (completion_tokens / 1_000_000 * price_out)
 
 @router.get("/dashboard", response_model=Dict[str, Any])
 async def get_usage_dashboard(

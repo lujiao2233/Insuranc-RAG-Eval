@@ -23,11 +23,18 @@
             />
           </el-select>
         </el-form-item>
+        <el-form-item v-if="selectedTestset" label="测试模式">
+          <el-tag :type="isConversationTestset ? 'warning' : 'info'">
+            {{ isConversationTestset ? '多轮评估' : '单轮评估' }}
+          </el-tag>
+        </el-form-item>
         <el-form-item label="评估方法" prop="evaluation_method">
-          <el-select v-model="form.evaluation_method" style="width: 100%">
+          <el-select v-model="form.evaluation_method" style="width: 100%" :disabled="isConversationTestset">
             <el-option label="RAGAS官方" value="ragas_official" />
             <el-option label="DeepEval" value="deepeval" />
+            <el-option label="DeepEval 多轮会话" value="deepeval_conversation" />
           </el-select>
+          <div v-if="isConversationTestset" class="form-help">多轮测试集固定使用多轮会话评估入口。</div>
         </el-form-item>
         <el-form-item label="评估指标" class="vertical-form-item">
           <el-checkbox-group v-model="form.evaluation_metrics" class="metric-categories">
@@ -37,7 +44,7 @@
                 v-for="metric in group.items"
                 :key="metric.value"
                 :value="metric.value"
-                :disabled="['context_relevance', 'context_precision', 'faithfulness', 'hallucination'].includes(metric.value)"
+                :disabled="isMetricDisabled(metric.value)"
               >
                 {{ metric.label }}
               </el-checkbox>
@@ -85,6 +92,8 @@ const rules: FormRules = {
 }
 
 const evaluableTestsets = computed(() => testsets.value.filter(item => item.can_evaluate))
+const selectedTestset = computed(() => testsets.value.find(item => item.id === form.testset_id) || null)
+const isConversationTestset = computed(() => selectedTestset.value?.conversation_mode === 'multi_turn')
 
 const ragasMetricCatalog = [
   {
@@ -131,8 +140,26 @@ const deepevalMetricCatalog = [
   }
 ]
 
+const conversationMetricCatalog = [
+  {
+    category: '会话质量',
+    items: [
+      { value: 'knowledge_retention', label: 'Knowledge Retention' },
+      { value: 'conversation_relevancy', label: 'Conversation Relevancy' },
+      { value: 'conversation_completeness', label: 'Conversation Completeness' },
+      { value: 'role_adherence', label: 'Role Adherence' }
+    ]
+  }
+]
+
 const enabledRagasMetrics = ref<string[]>(['answer_relevance', 'context_relevance', 'context_precision', 'faithfulness', 'answer_correctness'])
 const enabledDeepevalMetrics = ref<string[]>(['answer_relevance', 'context_relevance', 'context_precision', 'faithfulness', 'answer_correctness', 'toxicity', 'bias'])
+const enabledConversationMetrics = ref([
+  'knowledge_retention',
+  'conversation_relevancy',
+  'conversation_completeness',
+  'role_adherence'
+])
 
 const filterCatalogByEnabled = (
   catalog: Array<{ category: string; items: Array<{ value: string; label: string }> }>,
@@ -146,19 +173,43 @@ const filterCatalogByEnabled = (
 }
 
 const metricOptions = computed(() => {
+  if (isConversationTestset.value || form.evaluation_method === 'deepeval_conversation') {
+    return filterCatalogByEnabled(conversationMetricCatalog, enabledConversationMetrics.value)
+  }
   return form.evaluation_method === 'deepeval'
     ? filterCatalogByEnabled(deepevalMetricCatalog, enabledDeepevalMetrics.value)
     : filterCatalogByEnabled(ragasMetricCatalog, enabledRagasMetrics.value)
 })
 
 const getEnabledMetricsByMethod = (method: string) => {
+  if (method === 'deepeval_conversation') return enabledConversationMetrics.value
   return method === 'deepeval' ? enabledDeepevalMetrics.value : enabledRagasMetrics.value
+}
+
+const isMetricDisabled = (metric: string) => {
+  if (isConversationTestset.value) return false
+  return ['context_relevance', 'context_precision', 'faithfulness', 'hallucination'].includes(metric)
 }
 
 watch(
   () => form.evaluation_method,
   (method) => {
     form.evaluation_metrics = [...getEnabledMetricsByMethod(method)]
+  }
+)
+
+watch(
+  () => form.testset_id,
+  () => {
+    if (isConversationTestset.value) {
+      form.evaluation_method = 'deepeval_conversation'
+      form.evaluation_metrics = [...enabledConversationMetrics.value]
+      return
+    }
+    if (form.evaluation_method === 'deepeval_conversation') {
+      form.evaluation_method = 'ragas_official'
+    }
+    form.evaluation_metrics = [...getEnabledMetricsByMethod(form.evaluation_method)]
   }
 )
 
@@ -204,23 +255,28 @@ const handleCreate = async () => {
 
     creating.value = true
     try {
-      const result = await evaluationStore.createEvaluation({
-        testset_id: form.testset_id,
-        evaluation_method: form.evaluation_method,
-        evaluation_metrics: form.evaluation_metrics
-      })
+      const result = isConversationTestset.value
+        ? await evaluationStore.createConversationEvaluation({
+            testset_id: form.testset_id,
+            evaluation_metrics: form.evaluation_metrics
+          })
+        : await evaluationStore.createEvaluation({
+            testset_id: form.testset_id,
+            evaluation_method: form.evaluation_method,
+            evaluation_metrics: form.evaluation_metrics
+          })
 
       const testsetName = testsets.value.find(t => t.id === form.testset_id)?.name || form.testset_id
       taskStore.addTask({
         id: result.task_id || result.id,
-        name: `评估: ${testsetName}`,
+        name: `${isConversationTestset.value ? '多轮评估' : '评估'}: ${testsetName}`,
         type: 'evaluation',
         progress: 0,
         status: 'running',
         targetId: result.id
       })
 
-      ElMessage.success('评估任务已创建')
+      ElMessage.success(isConversationTestset.value ? '多轮评估任务已创建' : '评估任务已创建')
       router.push(`/evaluations/${result.id}`)
     } catch {
       ElMessage.error('创建评估失败')

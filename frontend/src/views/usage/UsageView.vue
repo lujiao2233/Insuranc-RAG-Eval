@@ -187,7 +187,7 @@ import { usageApi, type UsageEvent, type UsageDashboard } from '@/api/usage'
 type RangePreset = '1h' | '24h' | '7d' | 'custom'
 
 const loading = ref(false)
-const rangePreset = ref<RangePreset>('24h')
+const rangePreset = ref<RangePreset>('1h')
 const customRange = ref<[Date, Date] | null>(null)
 
 const dashboard = ref<UsageDashboard | null>(null)

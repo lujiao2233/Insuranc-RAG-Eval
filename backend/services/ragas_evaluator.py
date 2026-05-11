@@ -1,7 +1,7 @@
 """RAGAS评估器模块
 实现RAG系统的评估功能，支持RAGAS和DeepEval两种评估引擎
 """
-from typing import List, Dict, Any, Optional
+from typing import List, Dict, Any, Optional, Tuple
 import os
 import time
 from datetime import datetime
@@ -27,6 +27,42 @@ try:
     DEEPEVAL_AVAILABLE = True
 except Exception:
     DEEPEVAL_AVAILABLE = False
+
+
+CONVERSATION_METRIC_ALIASES: Dict[str, List[str]] = {
+    "knowledge_retention": [
+        "knowledge_retention",
+        "Knowledge Retention",
+        "knowledge retention",
+        "KnowledgeRetentionMetric",
+    ],
+    "conversation_relevancy": [
+        "conversation_relevancy",
+        "Conversation Relevancy",
+        "conversation relevancy",
+        "TurnRelevancyMetric",
+        "conversation_relevance",
+    ],
+    "conversation_completeness": [
+        "conversation_completeness",
+        "Conversation Completeness",
+        "conversation completeness",
+        "ConversationCompletenessMetric",
+    ],
+    "role_adherence": [
+        "role_adherence",
+        "Role Adherence",
+        "role adherence",
+        "RoleAdherenceMetric",
+    ],
+}
+
+CONVERSATION_METRIC_DISPLAY_NAMES: Dict[str, str] = {
+    "knowledge_retention": "Knowledge Retention",
+    "conversation_relevancy": "Conversation Relevancy",
+    "conversation_completeness": "Conversation Completeness",
+    "role_adherence": "Role Adherence",
+}
 
 
 
@@ -202,6 +238,509 @@ class RagasEvaluator:
                     row["question_type"] = qt
             out.append(row)
         return out
+
+    def evaluate_conversations(
+        self,
+        cases: List[Any],
+        evaluation_metrics: Optional[List[str]] = None,
+        run_config: Optional[Dict[str, Any]] = None,
+    ) -> Dict[str, Any]:
+        metrics = self._normalize_conversation_metric_names(evaluation_metrics)
+        if not metrics:
+            metrics = list(CONVERSATION_METRIC_ALIASES.keys())
+
+        try:
+            logger.info("开始多轮对话评估，case 数量: %s, 指标: %s", len(cases), metrics)
+            start_time = time.time()
+            normalized_cases = [self._normalize_conversation_case(item) for item in cases]
+            effective_config = self.evaluation_config.copy()
+            if run_config:
+                effective_config.update(run_config)
+
+            user_id = effective_config.get("user_id")
+            db_session = effective_config.get("db_session")
+            runtime_llm_config = self._configure_llm_environment(
+                user_id=str(user_id) if user_id else None,
+                db_session=db_session,
+                require_db_config=True,
+            )
+            return self._evaluate_conversations_with_deepeval(
+                normalized_cases,
+                metrics,
+                start_time,
+                run_config=effective_config,
+                llm_config=runtime_llm_config,
+            )
+        except Exception as exc:
+            logger.error("多轮对话评估失败: %s", exc)
+            return {
+                "error": str(exc),
+                "evaluation_id": f"conversation_eval_{int(time.time())}",
+                "timestamp": datetime.now().strftime("%Y-%m-%d %H:%M"),
+            }
+
+    def _normalize_conversation_metric_names(self, metrics: Optional[List[str]]) -> List[str]:
+        requested = metrics or []
+        normalized: List[str] = []
+        seen = set()
+        for item in requested:
+            raw = str(item or "").strip()
+            if not raw:
+                continue
+            matched = None
+            for canonical_name, aliases in CONVERSATION_METRIC_ALIASES.items():
+                if raw == canonical_name or raw in aliases:
+                    matched = canonical_name
+                    break
+            if matched and matched not in seen:
+                seen.add(matched)
+                normalized.append(matched)
+        return normalized
+
+    def _normalize_conversation_case(self, case: Any) -> Dict[str, Any]:
+        if isinstance(case, dict):
+            case_data = dict(case)
+        else:
+            case_data = {
+                "case_id": getattr(case, "id", ""),
+                "case_type": getattr(case, "case_type", ""),
+                "evaluation_criteria": getattr(case, "evaluation_criteria", ""),
+                "turns": getattr(case, "turns", []) or [],
+            }
+
+        turns: List[Dict[str, Any]] = []
+        raw_turns = case_data.get("turns") or []
+        for index, raw_turn in enumerate(raw_turns, start=1):
+            if isinstance(raw_turn, dict):
+                turn_data = dict(raw_turn)
+            else:
+                turn_data = {
+                    "turn_id": getattr(raw_turn, "id", ""),
+                    "turn_index": getattr(raw_turn, "turn_index", index),
+                    "question": getattr(raw_turn, "question", ""),
+                    "expected_answer": getattr(raw_turn, "expected_answer", ""),
+                    "generated_answer": getattr(raw_turn, "generated_answer", ""),
+                    "dependency_type": getattr(raw_turn, "dependency_type", ""),
+                    "context_hint": getattr(raw_turn, "context_hint", ""),
+                    "session_id_before": getattr(raw_turn, "session_id_before", ""),
+                    "session_id_after": getattr(raw_turn, "session_id_after", ""),
+                    "refs": getattr(raw_turn, "refs", ""),
+                }
+
+            turn_data["turn_id"] = str(
+                turn_data.get("turn_id")
+                or turn_data.get("id")
+                or ""
+            )
+            turn_data["turn_index"] = int(turn_data.get("turn_index") or index)
+            turn_data["question"] = str(turn_data.get("question") or "")
+            turn_data["expected_answer"] = str(turn_data.get("expected_answer") or "")
+            turn_data["generated_answer"] = str(turn_data.get("generated_answer") or "")
+            turn_data["dependency_type"] = str(turn_data.get("dependency_type") or "")
+            turn_data["context_hint"] = str(turn_data.get("context_hint") or "")
+            turn_data["session_id_before"] = str(turn_data.get("session_id_before") or "")
+            turn_data["session_id_after"] = str(turn_data.get("session_id_after") or "")
+            turn_data["refs"] = str(turn_data.get("refs") or "")
+            turns.append(turn_data)
+
+        turns.sort(key=lambda item: int(item.get("turn_index") or 0))
+        return {
+            "case_id": str(case_data.get("case_id") or case_data.get("id") or ""),
+            "case_type": str(case_data.get("case_type") or ""),
+            "evaluation_criteria": str(case_data.get("evaluation_criteria") or ""),
+            "turns": turns,
+        }
+
+    def _extract_json_object(self, content: str) -> Dict[str, Any]:
+        text = str(content or "").strip()
+        if not text:
+            return {}
+        try:
+            parsed = json.loads(text)
+            if isinstance(parsed, dict):
+                return parsed
+        except Exception:
+            pass
+
+        start = text.find("{")
+        end = text.rfind("}")
+        if start != -1 and end != -1 and end > start:
+            try:
+                parsed = json.loads(text[start:end + 1])
+                if isinstance(parsed, dict):
+                    return parsed
+            except Exception:
+                return {}
+        return {}
+
+    def _build_conversation_eval_prompt(
+        self,
+        case_payload: Dict[str, Any],
+        metric_names: List[str],
+    ) -> str:
+        metric_lines = [
+            f'- "{metric}": {CONVERSATION_METRIC_DISPLAY_NAMES.get(metric, metric)}'
+            for metric in metric_names
+        ]
+        turn_blocks: List[str] = []
+        for turn in case_payload.get("turns") or []:
+            turn_blocks.append(
+                "\n".join(
+                    [
+                        f"Turn {turn.get('turn_index')}",
+                        f"question: {turn.get('question') or ''}",
+                        f"expected_answer: {turn.get('expected_answer') or ''}",
+                        f"generated_answer: {turn.get('generated_answer') or ''}",
+                        f"dependency_type: {turn.get('dependency_type') or ''}",
+                        f"context_hint: {turn.get('context_hint') or ''}",
+                        f"refs: {turn.get('refs') or ''}",
+                        f"session_id_before: {turn.get('session_id_before') or ''}",
+                        f"session_id_after: {turn.get('session_id_after') or ''}",
+                    ]
+                )
+            )
+
+        return f"""
+你是一名多轮对话评估专家。请根据整段对话、每轮标准答案、模型实际回答，评估会话质量。
+
+请重点评估以下指标：
+{chr(10).join(metric_lines)}
+
+评分要求：
+1. 所有 score 范围必须在 0 到 1 之间。
+2. reason 必须使用简体中文，简洁说明判分依据。
+3. 既要输出 case 级评分，也要输出每个 turn 的评分。
+4. 如果某轮对某指标不完全适用，也要基于当前轮与前文关系给出评分，不要留空。
+5. 只输出合法 JSON，不要输出 markdown。
+
+JSON 结构必须严格为：
+{{
+  "case_metrics": {{
+    "knowledge_retention": {{"score": 0.0, "reason": ""}},
+    "conversation_relevancy": {{"score": 0.0, "reason": ""}},
+    "conversation_completeness": {{"score": 0.0, "reason": ""}},
+    "role_adherence": {{"score": 0.0, "reason": ""}}
+  }},
+  "turn_metrics": [
+    {{
+      "turn_index": 1,
+      "metrics": {{
+        "knowledge_retention": {{"score": 0.0, "reason": ""}},
+        "conversation_relevancy": {{"score": 0.0, "reason": ""}},
+        "conversation_completeness": {{"score": 0.0, "reason": ""}},
+        "role_adherence": {{"score": 0.0, "reason": ""}}
+      }}
+    }}
+  ]
+}}
+
+Case 信息：
+case_id: {case_payload.get("case_id") or ""}
+case_type: {case_payload.get("case_type") or ""}
+evaluation_criteria: {case_payload.get("evaluation_criteria") or ""}
+
+完整对话：
+{chr(10).join(turn_blocks)}
+""".strip()
+
+    def _call_structured_conversation_evaluator(
+        self,
+        prompt: str,
+        runtime_cfg: Dict[str, str],
+    ) -> Dict[str, Any]:
+        from openai import OpenAI
+
+        client = OpenAI(
+            api_key=(runtime_cfg or {}).get("api_key") or os.getenv("OPENAI_API_KEY"),
+            base_url=(runtime_cfg or {}).get("base_url") or os.getenv("OPENAI_BASE_URL"),
+        )
+        completion = client.chat.completions.create(
+            model=(runtime_cfg or {}).get("model") or os.getenv("QWEN_MODEL", "qwen-plus"),
+            messages=[
+                {
+                    "role": "system",
+                    "content": "你是严谨的多轮对话评估器。只输出 JSON，reason 使用简体中文。",
+                },
+                {"role": "user", "content": prompt},
+            ],
+            temperature=0.0,
+            max_tokens=2500,
+        )
+        content = ""
+        if completion and completion.choices:
+            content = completion.choices[0].message.content or ""
+        parsed = self._extract_json_object(content)
+        if not parsed:
+            raise RuntimeError("多轮评估模型未返回合法 JSON")
+        return parsed
+
+    def _normalize_metric_bundle(
+        self,
+        payload: Any,
+        metric_names: List[str],
+    ) -> Tuple[Dict[str, float], Dict[str, str]]:
+        metrics: Dict[str, float] = {}
+        reasons: Dict[str, str] = {}
+        source = payload if isinstance(payload, dict) else {}
+        for metric_name in metric_names:
+            item = source.get(metric_name) if isinstance(source, dict) else None
+            if isinstance(item, dict):
+                score = item.get("score", 0.0)
+                reason = item.get("reason", "")
+            else:
+                score = 0.0
+                reason = "模型未返回该指标结果"
+            try:
+                score_value = max(0.0, min(1.0, float(score)))
+            except Exception:
+                score_value = 0.0
+            metrics[metric_name] = score_value
+            reasons[metric_name] = str(reason or "模型未返回该指标结果")
+        return metrics, reasons
+
+    def _evaluate_conversations_with_deepeval(
+        self,
+        cases: List[Dict[str, Any]],
+        evaluation_metrics: List[str],
+        start_time: float,
+        run_config: Dict[str, Any] = None,
+        llm_config: Dict[str, str] = None,
+    ) -> Dict[str, Any]:
+        if not DEEPEVAL_AVAILABLE:
+            logger.info("deepeval 未安装，多轮评估使用 Qwen 兼容层")
+            return self._evaluate_conversations_with_fallback(
+                cases, evaluation_metrics, start_time, run_config, llm_config
+            )
+
+        logger.info("使用 deepeval 原生多轮评估指标执行")
+        from deepeval.metrics import (
+            KnowledgeRetentionMetric,
+            ConversationCompletenessMetric,
+            RoleAdherenceMetric,
+            TurnRelevancyMetric,
+        )
+        from deepeval.test_case import Turn, ConversationalTestCase
+
+        metric_map = {
+            "knowledge_retention": KnowledgeRetentionMetric,
+            "conversation_completeness": ConversationCompletenessMetric,
+            "role_adherence": RoleAdherenceMetric,
+            "conversation_relevancy": TurnRelevancyMetric,
+        }
+
+        deepeval_metrics = []
+        for metric_name in evaluation_metrics:
+            metric_cls = metric_map.get(metric_name)
+            if metric_cls:
+                deepeval_metrics.append(metric_cls(threshold=0.5, include_reason=True))
+
+        from deepeval import evaluate as deepeval_evaluate
+
+        test_cases = []
+        for case_payload in cases:
+            turns = case_payload.get("turns") or []
+            deepeval_turns = []
+            for raw_turn in turns:
+                generated = raw_turn.get("generated_answer", "")
+                if not generated:
+                    turn_result_payload = raw_turn.get("turn_result")
+                    if turn_result_payload:
+                        generated = turn_result_payload.get("generated_answer", "")
+
+                deepeval_turns.append(
+                    Turn(role="user", content=raw_turn.get("question", ""))
+                )
+                deepeval_turns.append(
+                    Turn(role="assistant", content=generated or "未回复")
+                )
+
+            conversation_test_case = ConversationalTestCase(
+                turns=deepeval_turns,
+            )
+            test_cases.append(conversation_test_case)
+
+        if not test_cases:
+            return {
+                "evaluation_id": f"conversation_eval_{int(time.time())}",
+                "evaluation_method": "deepeval_conversation",
+                "total_cases": 0,
+                "evaluated_cases": 0,
+                "total_turns": 0,
+                "evaluation_time": time.time() - start_time,
+                "timestamp": datetime.now().strftime("%Y-%m-%d %H:%M"),
+                "case_results": [],
+                "turn_results": [],
+                "overall_metrics": {},
+            }
+
+        result = deepeval_evaluate(test_cases=test_cases, metrics=deepeval_metrics)
+
+        case_results = []
+        turn_results = []
+        evaluation_time = time.time() - start_time
+
+        for idx, case_payload in enumerate(cases, start=1):
+            turns = case_payload.get("turns") or []
+            case_metrics = {}
+            case_reasons = {}
+
+            if result.results and idx - 1 < len(result.results):
+                eval_result = result.results[idx - 1]
+                for metric in eval_result.metrics:
+                    metric_name = metric.__class__.__name__.lower().replace("metric", "")
+                    display_map = {
+                        "knowledgeretention": "knowledge_retention",
+                        "conversationcompleteness": "conversation_completeness",
+                        "roleadherence": "role_adherence",
+                        "turnrelevancy": "conversation_relevancy",
+                        "conversationrelevancy": "conversation_relevancy",
+                        "conversationrelevance": "conversation_relevancy",
+                    }
+                    canonical_name = display_map.get(metric_name, metric_name)
+                    case_metrics[canonical_name] = getattr(metric, "score", 0.0) or 0.0
+                    case_reasons[canonical_name] = getattr(metric, "reason", "") or "无"
+
+            case_results.append(
+                {
+                    "case_id": case_payload.get("case_id", ""),
+                    "case_type": case_payload.get("case_type", ""),
+                    "evaluation_criteria": case_payload.get("evaluation_criteria", ""),
+                    "turn_count": len(turns),
+                    "metrics": case_metrics,
+                    "reasons": case_reasons,
+                }
+            )
+
+            for turn in turns:
+                turn_index = int(turn.get("turn_index") or 0)
+                turn_results.append(
+                    {
+                        "case_id": case_payload.get("case_id", ""),
+                        "turn_id": turn.get("turn_id", ""),
+                        "turn_index": turn_index,
+                        "question": turn.get("question", ""),
+                        "expected_answer": turn.get("expected_answer", ""),
+                        "generated_answer": turn.get("generated_answer", ""),
+                        "session_id_before": turn.get("session_id_before", ""),
+                        "session_id_after": turn.get("session_id_after", ""),
+                        "dependency_type": turn.get("dependency_type", ""),
+                        "context_hint": turn.get("context_hint", ""),
+                        "metrics": dict(case_metrics),
+                        "reasons": dict(case_reasons),
+                    }
+                )
+
+        overall_metrics = self._calculate_overall_metrics(case_results)
+        return {
+            "evaluation_id": f"conversation_eval_{int(time.time())}",
+            "evaluation_method": "deepeval_conversation",
+            "total_cases": len(case_results),
+            "evaluated_cases": len(case_results),
+            "total_turns": len(turn_results),
+            "evaluation_time": evaluation_time,
+            "timestamp": datetime.now().strftime("%Y-%m-%d %H:%M"),
+            "case_results": case_results,
+            "turn_results": turn_results,
+            "overall_metrics": overall_metrics,
+        }
+
+    def _evaluate_conversations_with_fallback(
+        self,
+        cases: List[Dict[str, Any]],
+        evaluation_metrics: List[str],
+        start_time: float,
+        run_config: Dict[str, Any] = None,
+        llm_config: Dict[str, str] = None,
+    ) -> Dict[str, Any]:
+        cfg = run_config or {}
+        progress_callback = cfg.get("progress_callback") if isinstance(cfg, dict) else None
+        runtime_cfg = llm_config or self._configure_llm_environment(
+            user_id=str(cfg.get("user_id")) if cfg.get("user_id") else None,
+            db_session=cfg.get("db_session"),
+            require_db_config=True,
+        )
+
+        case_results: List[Dict[str, Any]] = []
+        turn_results: List[Dict[str, Any]] = []
+        total_cases = len(cases)
+
+        for idx, case_payload in enumerate(cases, start=1):
+            prompt = self._build_conversation_eval_prompt(case_payload, evaluation_metrics)
+            raw_result = self._call_structured_conversation_evaluator(prompt, runtime_cfg)
+
+            case_metrics, case_reasons = self._normalize_metric_bundle(
+                raw_result.get("case_metrics"),
+                evaluation_metrics,
+            )
+            case_results.append(
+                {
+                    "case_id": case_payload.get("case_id", ""),
+                    "case_type": case_payload.get("case_type", ""),
+                    "evaluation_criteria": case_payload.get("evaluation_criteria", ""),
+                    "turn_count": len(case_payload.get("turns") or []),
+                    "metrics": case_metrics,
+                    "reasons": case_reasons,
+                }
+            )
+
+            turn_metric_items = raw_result.get("turn_metrics")
+            turn_metric_map: Dict[int, Dict[str, Any]] = {}
+            if isinstance(turn_metric_items, list):
+                for item in turn_metric_items:
+                    if not isinstance(item, dict):
+                        continue
+                    try:
+                        turn_index = int(item.get("turn_index") or 0)
+                    except Exception:
+                        turn_index = 0
+                    if turn_index > 0:
+                        turn_metric_map[turn_index] = item
+
+            for turn in case_payload.get("turns") or []:
+                turn_index = int(turn.get("turn_index") or 0)
+                turn_payload = turn_metric_map.get(turn_index, {})
+                turn_metrics, turn_reasons = self._normalize_metric_bundle(
+                    turn_payload.get("metrics"),
+                    evaluation_metrics,
+                )
+                turn_results.append(
+                    {
+                        "case_id": case_payload.get("case_id", ""),
+                        "turn_id": turn.get("turn_id", ""),
+                        "turn_index": turn_index,
+                        "question": turn.get("question", ""),
+                        "expected_answer": turn.get("expected_answer", ""),
+                        "generated_answer": turn.get("generated_answer", ""),
+                        "session_id_before": turn.get("session_id_before", ""),
+                        "session_id_after": turn.get("session_id_after", ""),
+                        "dependency_type": turn.get("dependency_type", ""),
+                        "context_hint": turn.get("context_hint", ""),
+                        "metrics": turn_metrics,
+                        "reasons": turn_reasons,
+                    }
+                )
+
+            if callable(progress_callback):
+                try:
+                    progress_callback(idx, total_cases)
+                except Exception as cb_error:
+                    logger.warning("多轮评估进度回调失败: %s", cb_error)
+
+        evaluation_time = time.time() - start_time
+        overall_metrics = self._calculate_overall_metrics(case_results)
+        return {
+            "evaluation_id": f"conversation_eval_{int(time.time())}",
+            "evaluation_method": "deepeval_conversation",
+            "total_cases": total_cases,
+            "evaluated_cases": len(case_results),
+            "total_turns": len(turn_results),
+            "evaluation_time": evaluation_time,
+            "timestamp": datetime.now().strftime("%Y-%m-%d %H:%M"),
+            "case_results": case_results,
+            "turn_results": turn_results,
+            "overall_metrics": overall_metrics,
+            "evaluation_metrics": evaluation_metrics,
+        }
 
     def _configure_llm_environment(
         self,
@@ -910,6 +1449,10 @@ class RagasEvaluator:
                 "faithfulness": 0.2,
                 "answer_correctness": 0.2,
                 "answer_similarity": 0.2,
+                "knowledge_retention": 0.25,
+                "conversation_relevancy": 0.25,
+                "conversation_completeness": 0.25,
+                "role_adherence": 0.25,
             }
             
             weighted_score = 0.0

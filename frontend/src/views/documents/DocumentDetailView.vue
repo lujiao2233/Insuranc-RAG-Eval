@@ -1,6 +1,6 @@
 <template>
   <div class="page document-detail-page" v-loading="loading">
-    <el-page-header @back="$router.back()" class="section">
+    <el-page-header @back="handleBack" class="section">
       <template #content>
         <span class="page-title">{{ document?.filename }}</span>
       </template>
@@ -163,10 +163,10 @@
             <el-button 
               type="warning" 
               @click="startAnalysis" 
-              :disabled="document.is_analyzed || document.status === 'processing'"
+              :disabled="document.status === 'processing'"
             >
               <el-icon><DataAnalysis /></el-icon>
-              {{ document.is_analyzed ? '已分析' : '开始分析' }}
+              {{ document.status === 'processing' ? '分析中' : (document.is_analyzed ? '重新分析' : '开始分析') }}
             </el-button>
             <el-button type="success" @click="createTestset" v-if="document.is_analyzed">
               <el-icon><Plus /></el-icon>
@@ -359,6 +359,15 @@ const getPageCountDisplay = (doc: any) => {
 const analysisTask = ref<any>(null)
 let timer: any = null
 
+const handleBack = () => {
+  sessionStorage.setItem('pending-close-tag-path', route.path)
+  if (window.history.length > 1) {
+    router.back()
+    return
+  }
+  router.push('/documents')
+}
+
 const fetchDocument = async () => {
   const id = route.params.id as string
   loading.value = true
@@ -377,7 +386,7 @@ const fetchDocument = async () => {
     await fetchTestsets()
   } catch (error) {
     ElMessage.error('获取文档详情失败')
-    router.back()
+    handleBack()
   } finally {
     loading.value = false
   }
@@ -412,12 +421,24 @@ const startPolling = (taskId: string) => {
 const startAnalysis = async () => {
   if (!document.value) return
   try {
+    if (document.value.is_analyzed) {
+      await ElMessageBox.confirm(
+        '重新分析会覆盖当前文档已有的提纲、元数据和切片结果，是否继续？',
+        '重新分析确认',
+        {
+          confirmButtonText: '继续',
+          cancelButtonText: '取消',
+          type: 'warning'
+        }
+      )
+    }
     const res = await documentApi.analyzeDocument(document.value.id)
-    ElMessage.success('分析任务已启动')
+    ElMessage.success(res.message || '分析任务已启动')
     if (res.task_id) {
       startPolling(res.task_id)
     }
   } catch (error: any) {
+    if (error === 'cancel') return
     ElMessage.error(error?.response?.data?.detail || '启动分析失败')
   }
 }

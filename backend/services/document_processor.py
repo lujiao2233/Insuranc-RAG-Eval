@@ -4,8 +4,8 @@
 """
 import os
 from pathlib import Path
-from typing import Optional, Dict, Any
-from datetime import datetime
+from typing import Optional, Dict, Any, List
+import json
 import PyPDF2
 from docx import Document as DocxDocument
 import openpyxl
@@ -257,10 +257,61 @@ class DocumentProcessor:
             "table_like_count": len(blocks),
         }
 
+    def _extract_tables_camelot(self, file_path: str) -> Optional[List[Dict[str, Any]]]:
+        try:
+            import camelot
+        except ImportError:
+            logger.info("camelot-py 未安装，跳过 Camelot 表格提取")
+            return None
+
+        try:
+            tables = camelot.read_pdf(file_path, pages='all', flavor='lattice')
+            if not tables or tables.n == 0:
+                tables = camelot.read_pdf(file_path, pages='all', flavor='stream')
+
+            if not tables or tables.n == 0:
+                return None
+
+            result = []
+            for i in range(tables.n):
+                table = tables[i]
+                df = table.df
+                if df.empty:
+                    continue
+                result.append({
+                    "page": int(table.page),
+                    "table_id": i + 1,
+                    "df": df,
+                    "accuracy": table.accuracy,
+                })
+            return result if result else None
+        except Exception as e:
+            logger.warning(f"Camelot 表格提取失败，回退到基础提取: {e}")
+            return None
+
+    def _camelot_tables_to_text(self, tables_data: List[Dict[str, Any]]) -> str:
+        text_parts = []
+        for table_info in tables_data:
+            page = table_info["page"]
+            table_id = table_info["table_id"]
+            df = table_info["df"]
+
+            text_parts.append(f"\n[TABLE_PAGE_{page}]")
+
+            rows = [[str(c).strip() for c in df.columns.tolist()]]
+            for _, row in df.iterrows():
+                rows.append([str(c).strip() for c in row.tolist()])
+
+            text_parts.append(json.dumps(rows, ensure_ascii=False))
+            text_parts.append("")
+
+        return "\n".join(text_parts)
+
     def process_pdf(self, file_path: str) -> Optional[Dict[str, Any]]:
         """处理PDF文件
         
         优先使用PyMuPDF（fitz）进行解析，以获得更好的CJK字符支持。
+        使用Camelot提取表格结构，若Camelot不可用则回退到基础提取。
         若PyMuPDF不可用，则回退到PyPDF2。
         """
         try:
@@ -282,8 +333,15 @@ class DocumentProcessor:
                         logger.warning(f"PyMuPDF提取第{page_num+1}页文本失败: {str(e)}")
                 
                 meta = doc.metadata or {}
-                table_info = self._extract_table_like_blocks(text_content)
                 doc.close()
+
+                camelot_tables = self._extract_tables_camelot(file_path)
+                if camelot_tables:
+                    table_text = self._camelot_tables_to_text(camelot_tables)
+                    text_content += table_text
+                    logger.info(f"Camelot 提取到 {len(camelot_tables)} 个表格")
+
+                table_info = self._extract_table_like_blocks(text_content)
                 
                 return {
                     "page_count": page_count,
@@ -292,8 +350,9 @@ class DocumentProcessor:
                         "title": meta.get("title", ""),
                         "author": meta.get("author", ""),
                         "subject": meta.get("subject", ""),
-                        "table_like_count": table_info.get("table_like_count", 0),
+                        "table_like_count": table_info.get("table_like_count", 0) + (len(camelot_tables) if camelot_tables else 0),
                         "table_like_blocks": table_info.get("table_like_blocks", []),
+                        "camelot_tables_count": len(camelot_tables) if camelot_tables else 0,
                     },
                 }
             except Exception as e:
@@ -316,6 +375,13 @@ class DocumentProcessor:
                         logger.warning(f"PyPDF2提取第{page_num+1}页文本失败: {str(e)}")
                 
                 meta = pdf_reader.metadata or {}
+
+                camelot_tables = self._extract_tables_camelot(file_path)
+                if camelot_tables:
+                    table_text = self._camelot_tables_to_text(camelot_tables)
+                    text_content += table_text
+                    logger.info(f"Camelot 提取到 {len(camelot_tables)} 个表格")
+
                 table_info = self._extract_table_like_blocks(text_content)
                 
                 return {
@@ -325,8 +391,9 @@ class DocumentProcessor:
                         "title": meta.get("/Title", ""),
                         "author": meta.get("/Author", ""),
                         "subject": meta.get("/Subject", ""),
-                        "table_like_count": table_info.get("table_like_count", 0),
+                        "table_like_count": table_info.get("table_like_count", 0) + (len(camelot_tables) if camelot_tables else 0),
                         "table_like_blocks": table_info.get("table_like_blocks", []),
+                        "camelot_tables_count": len(camelot_tables) if camelot_tables else 0,
                     },
                 }
         except Exception as e:

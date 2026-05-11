@@ -16,7 +16,19 @@ from datetime import datetime
 from api.dependencies import get_current_user, get_current_active_user
 from config.database import get_db, SessionLocal
 from schemas import TestSetCreate, TestSetUpdate
-from models.database import User, TestSet as TestSetModel, Document, Question, Evaluation as EvaluationModel, EvaluationResult as EvaluationResultModel
+from models.database import (
+    User,
+    TestSet as TestSetModel,
+    Document,
+    DocumentChunk,
+    Question,
+    Evaluation as EvaluationModel,
+    EvaluationResult as EvaluationResultModel,
+    ConversationExecution,
+    ConversationTestCase,
+    ConversationTurn,
+    ConversationTurnResult,
+)
 from services.question_generator import get_question_generator
 from services.task_manager import task_manager, TaskCancelledError
 from services.config_service import ConfigService
@@ -122,6 +134,118 @@ def _build_question_metadata(question_payload: Dict[str, Any]) -> Dict[str, Any]
         meta["filename"] = filenames[0]
 
     return meta
+
+
+def _serialize_conversation_turn(turn: ConversationTurn, turn_result: Optional[ConversationTurnResult] = None) -> Dict[str, Any]:
+    data: Dict[str, Any] = {
+        "id": turn.id,
+        "case_id": turn.case_id,
+        "turn_index": turn.turn_index,
+        "question": turn.question,
+        "expected_answer": turn.expected_answer,
+        "dependency_type": turn.dependency_type,
+        "context_hint": turn.context_hint,
+        "metadata": turn.turn_metadata,
+        "created_at": turn.created_at.isoformat() if turn.created_at else None,
+        "updated_at": turn.updated_at.isoformat() if turn.updated_at else None,
+    }
+    if turn_result:
+        data["generated_answer"] = turn_result.generated_answer or ""
+    return data
+
+
+def _serialize_conversation_source_chunk(chunk: DocumentChunk, role: str) -> Dict[str, Any]:
+    metadata = chunk.chunk_metadata or {}
+    return {
+        "id": chunk.id,
+        "role": role,
+        "document_id": chunk.document_id,
+        "filename": chunk.document.filename if getattr(chunk, "document", None) else metadata.get("filename"),
+        "sequence_number": chunk.sequence_number,
+        "content": chunk.content,
+        "metadata": metadata,
+    }
+
+
+def _serialize_conversation_case(db: Session, case: ConversationTestCase) -> Dict[str, Any]:
+    turns = sorted(case.turns or [], key=lambda item: item.turn_index or 0)
+    source_chunks: List[Dict[str, Any]] = []
+    ordered_chunk_refs: List[tuple[str, str]] = []
+    if case.anchor_chunk_id:
+        ordered_chunk_refs.append((case.anchor_chunk_id, "anchor"))
+    for chunk_id in case.support_chunk_ids or []:
+        if chunk_id:
+            ordered_chunk_refs.append((chunk_id, "support"))
+
+    if ordered_chunk_refs:
+        chunk_ids = [chunk_id for chunk_id, _ in ordered_chunk_refs]
+        chunks = db.query(DocumentChunk).filter(DocumentChunk.id.in_(chunk_ids)).all()
+        chunk_map = {chunk.id: chunk for chunk in chunks}
+        for chunk_id, role in ordered_chunk_refs:
+            chunk = chunk_map.get(chunk_id)
+            if chunk:
+                source_chunks.append(_serialize_conversation_source_chunk(chunk, role))
+
+    latest_execution = _get_latest_execution_evaluation(db, str(case.testset_id))
+    turn_results_map: Dict[str, ConversationTurnResult] = {}
+    if latest_execution:
+        execution_ids = [e.id for e in db.query(ConversationExecution).filter(
+            ConversationExecution.evaluation_id == latest_execution.id
+        ).all()]
+        if execution_ids:
+            turn_results = db.query(ConversationTurnResult).filter(
+                ConversationTurnResult.execution_id.in_(execution_ids),
+                ConversationTurnResult.case_id == str(case.id)
+            ).all()
+            turn_results_map = {str(r.turn_id): r for r in turn_results}
+
+    return {
+        "id": case.id,
+        "testset_id": case.testset_id,
+        "case_type": case.case_type,
+        "anchor_chunk_id": case.anchor_chunk_id,
+        "support_chunk_ids": case.support_chunk_ids or [],
+        "source_chunks": source_chunks,
+        "evaluation_criteria": case.evaluation_criteria,
+        "turn_count": case.turn_count,
+        "case_metadata": case.case_metadata,
+        "turns": [_serialize_conversation_turn(turn, turn_results_map.get(str(turn.id))) for turn in turns],
+        "created_at": case.created_at.isoformat() if case.created_at else None,
+        "updated_at": case.updated_at.isoformat() if case.updated_at else None,
+    }
+
+
+def _serialize_conversation_execution(execution: ConversationExecution) -> Dict[str, Any]:
+    metadata = execution.execution_metadata if isinstance(execution.execution_metadata, dict) else {}
+    return {
+        "id": execution.id,
+        "testset_id": execution.testset_id,
+        "evaluation_id": execution.evaluation_id,
+        "user_id": execution.user_id,
+        "status": execution.status,
+        "started_at": execution.started_at.isoformat() if execution.started_at else None,
+        "finished_at": execution.finished_at.isoformat() if execution.finished_at else None,
+        "execution_metadata": metadata,
+    }
+
+
+def _serialize_conversation_turn_result(result: ConversationTurnResult) -> Dict[str, Any]:
+    return {
+        "id": result.id,
+        "execution_id": result.execution_id,
+        "case_id": result.case_id,
+        "turn_id": result.turn_id,
+        "session_id_before": result.session_id_before,
+        "session_id_after": result.session_id_after,
+        "request_payload": result.request_payload or {},
+        "response_payload": result.response_payload or {},
+        "generated_answer": result.generated_answer or "",
+        "refs": result.refs or "",
+        "turn_status": result.turn_status,
+        "execution_time_ms": result.execution_time_ms,
+        "created_at": result.created_at.isoformat() if result.created_at else None,
+        "updated_at": result.updated_at.isoformat() if result.updated_at else None,
+    }
 
 
 def _get_latest_execution_evaluation(db: Session, testset_id: str) -> Optional[EvaluationModel]:
@@ -242,6 +366,85 @@ def _clone_testset_with_questions(
     return cloned
 
 
+def _clone_conversation_cases(
+    db: Session,
+    source_testset_id: str,
+    target_testset_id: str,
+) -> int:
+    source_cases = db.query(ConversationTestCase).filter(
+        ConversationTestCase.testset_id == str(source_testset_id)
+    ).all()
+    cloned_case_count = 0
+    for source_case in source_cases:
+        cloned_case = ConversationTestCase(
+            id=str(uuid.uuid4()),
+            testset_id=str(target_testset_id),
+            case_type=source_case.case_type,
+            anchor_chunk_id=source_case.anchor_chunk_id,
+            support_chunk_ids=list(source_case.support_chunk_ids or []),
+            evaluation_criteria=source_case.evaluation_criteria,
+            turn_count=source_case.turn_count,
+            case_metadata=dict(source_case.case_metadata or {}),
+        )
+        db.add(cloned_case)
+        db.flush()
+
+        source_turns = db.query(ConversationTurn).filter(
+            ConversationTurn.case_id == str(source_case.id)
+        ).order_by(ConversationTurn.turn_index.asc()).all()
+        for source_turn in source_turns:
+            cloned_turn = ConversationTurn(
+                id=str(uuid.uuid4()),
+                case_id=str(cloned_case.id),
+                turn_index=source_turn.turn_index,
+                question=source_turn.question,
+                expected_answer=source_turn.expected_answer,
+                dependency_type=source_turn.dependency_type,
+                context_hint=source_turn.context_hint,
+                turn_metadata=dict(source_turn.turn_metadata or {}),
+            )
+            db.add(cloned_turn)
+        cloned_case_count += 1
+    return cloned_case_count
+
+
+def _clone_conversation_testset(
+    db: Session,
+    source_testset: TestSetModel,
+    *,
+    user_id: str,
+    stage: str,
+    clone_name: str,
+    extra_metadata: Optional[Dict[str, Any]] = None,
+) -> TestSetModel:
+    source_meta = source_testset.testset_metadata if isinstance(source_testset.testset_metadata, dict) else {}
+    new_meta: Dict[str, Any] = {
+        **source_meta,
+        "lifecycle_stage": stage,
+        "source_testset_id": str(source_testset.id),
+    }
+    if extra_metadata:
+        new_meta.update(extra_metadata)
+
+    cloned = TestSetModel(
+        id=str(uuid.uuid4()),
+        user_id=user_id,
+        document_id=source_testset.document_id,
+        name=clone_name,
+        description=source_testset.description,
+        question_count=source_testset.question_count,
+        question_types=source_testset.question_types,
+        generation_method=source_testset.generation_method or "qwen_model",
+        conversation_mode=source_testset.conversation_mode or "multi_turn",
+        file_path=source_testset.file_path,
+        testset_metadata=new_meta,
+    )
+    db.add(cloned)
+    db.flush()
+    _clone_conversation_cases(db, str(source_testset.id), str(cloned.id))
+    return cloned
+
+
 def _ensure_generation_model_available(db: Session, user_id: str) -> None:
     cs = ConfigService(db)
     result = cs.test_api_connection(user_id, service="qwen")
@@ -276,19 +479,33 @@ async def list_testsets(
     for t in testsets:
         latest_execution = _get_latest_execution_evaluation(db, str(t.id))
         answered_questions = 0
+        is_multi_turn = (t.conversation_mode or "") == "multi_turn"
         if latest_execution:
-            answered_questions = db.query(EvaluationResultModel).filter(
-                EvaluationResultModel.evaluation_id == latest_execution.id,
-                EvaluationResultModel.generated_answer.isnot(None),
-                EvaluationResultModel.generated_answer != ""
-            ).count()
+            if is_multi_turn:
+                answered_questions = db.query(ConversationTurnResult).filter(
+                    ConversationTurnResult.execution_id.in_(
+                        db.query(ConversationExecution.id).filter(
+                            ConversationExecution.evaluation_id == latest_execution.id
+                        )
+                    ),
+                    ConversationTurnResult.generated_answer.isnot(None),
+                    ConversationTurnResult.generated_answer != ""
+                ).count()
+            else:
+                answered_questions = db.query(EvaluationResultModel).filter(
+                    EvaluationResultModel.evaluation_id == latest_execution.id,
+                    EvaluationResultModel.generated_answer.isnot(None),
+                    EvaluationResultModel.generated_answer != ""
+                ).count()
         else:
-            # 兼容历史数据：旧版本会直接把模型答案写到 questions.answer
-            answered_questions = db.query(Question).filter(
-                Question.testset_id == t.id,
-                Question.answer.isnot(None),
-                Question.answer != ""
-            ).count()
+            if is_multi_turn:
+                answered_questions = 0
+            else:
+                answered_questions = db.query(Question).filter(
+                    Question.testset_id == t.id,
+                    Question.answer.isnot(None),
+                    Question.answer != ""
+                ).count()
         total_questions = t.question_count or 0
         can_evaluate = total_questions > 0 and answered_questions >= total_questions
 
@@ -312,6 +529,7 @@ async def list_testsets(
             "latest_evaluation_id": str(latest_execution.id) if latest_execution else None,
             "question_types": t.question_types,
             "generation_method": t.generation_method,
+            "conversation_mode": t.conversation_mode,
             "create_time": t.create_time.isoformat() if t.create_time else None,
             "file_path": t.file_path,
             "metadata": t.testset_metadata
@@ -504,6 +722,9 @@ async def get_testset(
         raise HTTPException(status_code=404, detail="测试集不存在")
     
     questions = db.query(Question).filter(Question.testset_id == str(testset_id)).all()
+    conversation_cases = db.query(ConversationTestCase).filter(
+        ConversationTestCase.testset_id == str(testset_id)
+    ).all()
     execution_answers = _get_execution_answers_map(db, str(testset_id))
     
     return {
@@ -512,6 +733,7 @@ async def get_testset(
         "name": testset.name,
         "description": testset.description,
         "question_count": testset.question_count,
+        "conversation_mode": testset.conversation_mode,
         "question_types": testset.question_types,
         "generation_method": testset.generation_method,
         "metadata": testset.testset_metadata,
@@ -529,7 +751,100 @@ async def get_testset(
                 "context": q.context
             }
             for q in questions
-        ]
+        ],
+        "conversation_cases": [_serialize_conversation_case(db, case) for case in conversation_cases]
+    }
+
+
+@router.get("/{testset_id}/conversation_cases")
+async def get_conversation_cases(
+    testset_id: UUID,
+    current_user: User = Depends(get_current_active_user),
+    db: Session = Depends(get_db)
+):
+    testset = db.query(TestSetModel).filter(
+        TestSetModel.id == str(testset_id),
+        TestSetModel.user_id == current_user.id
+    ).first()
+    if not testset:
+        raise HTTPException(status_code=404, detail="测试集不存在")
+
+    cases = db.query(ConversationTestCase).filter(
+        ConversationTestCase.testset_id == str(testset_id)
+    ).all()
+    return {
+        "items": [_serialize_conversation_case(db, case) for case in cases],
+        "total": len(cases)
+    }
+
+
+@router.get("/{testset_id}/conversation_cases/{case_id}")
+async def get_conversation_case_detail(
+    testset_id: UUID,
+    case_id: UUID,
+    current_user: User = Depends(get_current_active_user),
+    db: Session = Depends(get_db)
+):
+    testset = db.query(TestSetModel).filter(
+        TestSetModel.id == str(testset_id),
+        TestSetModel.user_id == current_user.id
+    ).first()
+    if not testset:
+        raise HTTPException(status_code=404, detail="测试集不存在")
+
+    case = db.query(ConversationTestCase).filter(
+        ConversationTestCase.id == str(case_id),
+        ConversationTestCase.testset_id == str(testset_id)
+    ).first()
+    if not case:
+        raise HTTPException(status_code=404, detail="会话 case 不存在")
+
+    return _serialize_conversation_case(db, case)
+
+
+@router.get("/conversation_executions/{execution_id}")
+async def get_conversation_execution(
+    execution_id: UUID,
+    current_user: User = Depends(get_current_active_user),
+    db: Session = Depends(get_db)
+):
+    execution = db.query(ConversationExecution).filter(
+        ConversationExecution.id == str(execution_id),
+        ConversationExecution.user_id == current_user.id
+    ).first()
+    if not execution:
+        raise HTTPException(status_code=404, detail="多轮执行记录不存在")
+    return _serialize_conversation_execution(execution)
+
+
+@router.get("/conversation_executions/{execution_id}/turn_results")
+async def get_conversation_turn_results(
+    execution_id: UUID,
+    current_user: User = Depends(get_current_active_user),
+    db: Session = Depends(get_db)
+):
+    execution = db.query(ConversationExecution).filter(
+        ConversationExecution.id == str(execution_id),
+        ConversationExecution.user_id == current_user.id
+    ).first()
+    if not execution:
+        raise HTTPException(status_code=404, detail="多轮执行记录不存在")
+
+    results = db.query(ConversationTurnResult).filter(
+        ConversationTurnResult.execution_id == str(execution_id)
+    ).all()
+    results = sorted(
+        results,
+        key=lambda item: (
+            str(item.case_id or ""),
+            str(item.turn.turn_index or 0) if getattr(item, "turn", None) else "0",
+            str(item.id or ""),
+        ),
+    )
+    return {
+        "execution": _serialize_conversation_execution(execution),
+        "items": [_serialize_conversation_turn_result(item) for item in results],
+        "total": len(results),
     }
 
 
@@ -604,6 +919,50 @@ async def update_testset(
         "question_count": testset.question_count,
         "message": "测试集更新成功"
     }
+
+
+@router.put("/{testset_id}/conversation_cases/{case_id}/turns/{turn_id}")
+async def update_conversation_turn(
+    testset_id: UUID,
+    case_id: UUID,
+    turn_id: UUID,
+    turn_data: dict,
+    current_user: User = Depends(get_current_active_user),
+    db: Session = Depends(get_db)
+):
+    testset = db.query(TestSetModel).filter(
+        TestSetModel.id == str(testset_id),
+        TestSetModel.user_id == current_user.id
+    ).first()
+    if not testset:
+        raise HTTPException(status_code=404, detail="测试集不存在")
+
+    case = db.query(ConversationTestCase).filter(
+        ConversationTestCase.id == str(case_id),
+        ConversationTestCase.testset_id == str(testset_id)
+    ).first()
+    if not case:
+        raise HTTPException(status_code=404, detail="会话 case 不存在")
+
+    turn = db.query(ConversationTurn).filter(
+        ConversationTurn.id == str(turn_id),
+        ConversationTurn.case_id == str(case_id)
+    ).first()
+    if not turn:
+        raise HTTPException(status_code=404, detail="会话轮次不存在")
+
+    if "expected_answer" in turn_data:
+        turn.expected_answer = str(turn_data.get("expected_answer") or "").strip()
+    if "question" in turn_data:
+        turn.question = str(turn_data.get("question") or "").strip()
+    if "context_hint" in turn_data:
+        turn.context_hint = str(turn_data.get("context_hint") or "").strip() or None
+    if "dependency_type" in turn_data:
+        turn.dependency_type = str(turn_data.get("dependency_type") or turn.dependency_type).strip() or turn.dependency_type
+
+    db.commit()
+    db.refresh(turn)
+    return _serialize_conversation_turn(turn)
 
 
 @router.delete("/{testset_id}")
@@ -702,11 +1061,25 @@ class GenerateQuestionsRequest(BaseModel):
     multi_doc_ratio: float = 0.1
     document_ids: Optional[List[UUID]] = None
     persona_list: Optional[List[Dict[str, Any]]] = None
+    distribution_mode: Optional[str] = "total"
+    questions_per_doc: Optional[int] = None
+
+class GenerateConversationRequest(BaseModel):
+    num_cases: int = 5
+    turn_range: Optional[List[int]] = None
+    case_type_ratio: Optional[Dict[str, float]] = None
+    document_ids: Optional[List[UUID]] = None
 
 class SendCodeRequest(BaseModel):
     mobile: str
 
 class ExecuteTestsetRequest(BaseModel):
+    mobile: str
+    verify_code: str
+    bot_id: str
+
+
+class ExecuteConversationTestsetRequest(BaseModel):
     mobile: str
     verify_code: str
     bot_id: str
@@ -752,12 +1125,84 @@ def _submit_generation_task(
             "multi_doc_ratio": request.multi_doc_ratio,
             "document_ids": request_doc_ids or None,
             "persona_list": request.persona_list,
+            "distribution_mode": request.distribution_mode or "total",
+            "questions_per_doc": request.questions_per_doc,
         }
     )
 
     return {
         "task_id": task_id,
         "message": "任务已创建，请轮询状态接口获取进度"
+    }
+
+
+def _submit_conversation_generation_task(
+    testset_id: UUID,
+    request: GenerateConversationRequest,
+    current_user: User,
+    db: Session
+):
+    """统一提交多轮 case 生成任务。"""
+    testset = db.query(TestSetModel).filter(
+        TestSetModel.id == str(testset_id),
+        TestSetModel.user_id == current_user.id
+    ).first()
+
+    if not testset:
+        raise HTTPException(status_code=404, detail="测试集不存在")
+
+    request_doc_ids = [str(doc_id) for doc_id in request.document_ids] if request.document_ids else []
+    target_doc_ids = []
+    if testset.document_id:
+        target_doc_ids.append(str(testset.document_id))
+    for doc_id in request_doc_ids:
+        if doc_id and doc_id not in target_doc_ids:
+            target_doc_ids.append(doc_id)
+
+    if not target_doc_ids:
+        raise HTTPException(status_code=400, detail="测试集未关联可用文档，请先指定 document_ids")
+
+    num_cases = int(request.num_cases or 0)
+    if num_cases <= 0:
+        raise HTTPException(status_code=400, detail="num_cases 必须大于 0")
+
+    turn_range = list(request.turn_range or [3, 5])
+    if len(turn_range) != 2:
+        raise HTTPException(status_code=400, detail="turn_range 必须是包含两个整数的数组")
+
+    case_type_ratio = dict(request.case_type_ratio or {})
+    if case_type_ratio:
+        invalid_case_types = [
+            key for key in case_type_ratio.keys()
+            if key not in {"single_chunk_deep", "same_doc_chain", "cross_doc_assoc"}
+        ]
+        if invalid_case_types:
+            raise HTTPException(
+                status_code=400,
+                detail=f"case_type_ratio 包含非法类型: {', '.join(sorted(invalid_case_types))}"
+            )
+
+    _ensure_generation_model_available(db, str(current_user.id))
+
+    if testset.conversation_mode != "multi_turn":
+        testset.conversation_mode = "multi_turn"
+        db.commit()
+
+    task_id = task_manager.submit_task(
+        task_type="generate_conversation_cases",
+        params={
+            "testset_id": str(testset_id),
+            "user_id": str(current_user.id),
+            "num_cases": num_cases,
+            "turn_range": turn_range,
+            "case_type_ratio": case_type_ratio or None,
+            "document_ids": request_doc_ids or None,
+        }
+    )
+
+    return {
+        "task_id": task_id,
+        "message": "多轮 case 生成任务已创建，请轮询状态接口获取进度"
     }
 
 
@@ -828,7 +1273,9 @@ def _run_generation_task(
     enable_safety_robustness: bool,
     multi_doc_ratio: float,
     document_ids: Optional[List[str]],
-    persona_list: Optional[List[Dict[str, Any]]]
+    persona_list: Optional[List[Dict[str, Any]]],
+    distribution_mode: str = "total",
+    questions_per_doc: Optional[int] = None
 ):
     """后台任务：生成测试问题"""
     db = SessionLocal()
@@ -915,25 +1362,120 @@ def _run_generation_task(
         if generation_mode == "advanced":
             task_manager.append_log(task_id, f"使用{generation_mode}模式生成问题...")
             
+            # ===== 断点续传：读取 checkpoint =====
+            task_obj = task_manager.get_task(task_id)
+            checkpoint = (task_obj.get("context_info") or {}) if task_obj else {}
+            already_generated = int(checkpoint.get("generated_count", 0))
+            target_count = num_questions if distribution_mode != "per_doc" else (questions_per_doc or 5) * len(target_doc_ids)
+            remaining_count = max(1, target_count - already_generated)
+            
+            # per_doc 模式下，读取每个文档的进度
+            per_doc_progress: Dict[str, int] = {}
+            if distribution_mode == "per_doc":
+                per_doc_progress = dict(checkpoint.get("per_doc_progress") or {})
+                # 从数据库校准每个文档的进度
+                for doc_id in target_doc_ids:
+                    existing_count = db.query(Question).filter(
+                        Question.testset_id == testset_id,
+                        Question.question_metadata["doc_id"].as_string() == doc_id
+                    ).count() if doc_id else 0
+                    if existing_count > 0:
+                        per_doc_progress[doc_id] = existing_count
+            
+            if already_generated > 0:
+                task_manager.append_log(task_id, f"检测到断点：已生成 {already_generated} 题，还需生成 {remaining_count} 题")
+            
             import re
+            
+            # 计算已保存的问题数（从数据库确认）
+            existing_q_count = db.query(Question).filter(Question.testset_id == testset_id).count()
+            if existing_q_count != already_generated:
+                # 以数据库实际数量为准
+                already_generated = existing_q_count
+                remaining_count = max(1, target_count - already_generated)
+                task_manager.append_log(task_id, f"校准断点：数据库已有 {already_generated} 题，还需生成 {remaining_count} 题")
+            
+            # 用于追踪每个文档进度的字典
+            _per_doc_progress_tracker = dict(per_doc_progress)
+            
+            # ===== 增量保存回调 =====
+            def _checkpoint_callback(q_dict):
+                """每生成一题就立即保存到数据库，实现断点续传"""
+                nonlocal already_generated, _per_doc_progress_tracker
+                try:
+                    normalized_type, normalized_major, normalized_minor = _normalize_question_category(
+                        q_dict.get("question_type"),
+                        q_dict.get("category_major"),
+                        q_dict.get("category_minor")
+                    )
+                    question_metadata = _build_question_metadata(q_dict)
+                    question = Question(
+                        id=str(uuid.uuid4()),
+                        testset_id=testset_id,
+                        question=q_dict.get("question", ""),
+                        question_type=normalized_type,
+                        expected_answer=q_dict.get("expected_answer", ""),
+                        context=q_dict.get("context", ""),
+                        question_metadata=question_metadata or None,
+                        category_major=normalized_major,
+                        category_minor=normalized_minor
+                    )
+                    db.add(question)
+                    db.commit()
+                    
+                    already_generated += 1
+                    testset.question_count = already_generated
+                    db.commit()
+                    
+                    # 更新每个文档的进度
+                    q_doc_id = str(question_metadata.get("doc_id") or "") if question_metadata else ""
+                    if q_doc_id:
+                        _per_doc_progress_tracker[q_doc_id] = _per_doc_progress_tracker.get(q_doc_id, 0) + 1
+                    
+                    # 更新 checkpoint
+                    task_manager.update_context_info(task_id, {
+                        "generated_count": already_generated,
+                        "target_count": target_count,
+                        "distribution_mode": distribution_mode,
+                        "per_doc_progress": _per_doc_progress_tracker,
+                    })
+                    
+                    # 更新进度
+                    task_manager.update_progress(
+                        task_id,
+                        already_generated / max(target_count, 1),
+                        f"生成进度 {already_generated}/{target_count}",
+                        current_step=already_generated,
+                        total_steps=target_count,
+                    )
+                    
+                    created_questions.append({
+                        "id": question.id,
+                        "question": question.question,
+                        "question_type": question.question_type,
+                        "expected_answer": question.expected_answer,
+                        "context": question.context,
+                        "metadata": question_metadata
+                    })
+                except Exception as e:
+                    logger.warning(f"Checkpoint 保存失败: {e}")
+            
             def _progress_callback(payload):
                 task_manager.ensure_not_cancelled(task_id)
                 text = str(payload or "")
                 task_manager.append_log(task_id, text)
-                m = re.search(r"第\s*(\d+)\s*/\s*(\d+)\s*题", text)
-                if m:
-                    cur = int(m.group(1))
-                    tot = max(int(m.group(2)), 1)
-                    task_manager.update_progress(
-                        task_id,
-                        cur / tot,
-                        f"生成进度 {cur}/{tot}",
-                        current_step=cur,
-                        total_steps=tot,
-                    )
+
+            # 从配置读取并发生成数
+            _gen_concurrency = 3  # 默认值
+            try:
+                cs_gen = ConfigService(db)
+                _conc_str = cs_gen.get_config_value(user_id, "generation.concurrency", "3")
+                _gen_concurrency = max(1, min(10, int(float(_conc_str))))
+            except Exception:
+                pass
 
             params = {
-                "testset_size": num_questions,
+                "testset_size": remaining_count,
                 "enable_safety_robustness": enable_safety_robustness,
                 "generation_mode": "qwen_llm",
                 "multi_doc_ratio": multi_doc_ratio,
@@ -942,43 +1484,34 @@ def _run_generation_task(
                 "persona_list": persona_list or [],
                 "question_types": types_list,
                 "user_id": user_id,
-                "_progress_callback": _progress_callback
+                "_progress_callback": _progress_callback,
+                "_checkpoint_callback": _checkpoint_callback,
+                "distribution_mode": distribution_mode,
+                "questions_per_doc": questions_per_doc,
+                "_task_id": task_id,
+                "_per_doc_progress": per_doc_progress,
+                "_concurrency": _gen_concurrency,
             }
             
             import asyncio
             generated_questions = asyncio.run(generator.generate_advanced_questions(content_data, params))
             task_manager.ensure_not_cancelled(task_id)
+            # 问题已通过 _checkpoint_callback 逐题保存，不再需要统一创建 Question 行
+            # 但仍需处理 generator 返回但未触发 checkpoint 的情况（兼容性保障）
             questions_list = generated_questions.get("questions", []) if isinstance(generated_questions, dict) else generated_questions
             for q in questions_list:
                 task_manager.ensure_not_cancelled(task_id)
-                if len(created_questions) >= num_questions:
+                # 检查是否已经通过 checkpoint 保存过（通过 question 文本去重）
+                q_text = str(q.get("question", "")).strip()
+                already_saved = any(
+                    str(cq.get("question", "")).strip() == q_text 
+                    for cq in created_questions
+                )
+                if already_saved:
+                    continue
+                if distribution_mode != "per_doc" and len(created_questions) >= target_count:
                     break
-                normalized_type, normalized_major, normalized_minor = _normalize_question_category(
-                    q.get("question_type"),
-                    q.get("category_major"),
-                    q.get("category_minor")
-                )
-                question_metadata = _build_question_metadata(q)
-                question = Question(
-                    id=str(uuid.uuid4()),
-                    testset_id=testset_id,
-                    question=q.get("question", ""),
-                    question_type=normalized_type,
-                    expected_answer=q.get("expected_answer", ""),
-                    context=q.get("context", ""),
-                    question_metadata=question_metadata or None,
-                    category_major=normalized_major,
-                    category_minor=normalized_minor
-                )
-                db.add(question)
-                created_questions.append({
-                    "id": question.id,
-                    "question": question.question,
-                    "question_type": question.question_type,
-                    "expected_answer": question.expected_answer,
-                    "context": question.context,
-                    "metadata": question_metadata
-                })
+                _checkpoint_callback(q)
         
         testset.question_count = len(created_questions)
         db.commit()
@@ -1000,17 +1533,36 @@ def _run_generation_task(
         task_manager.append_log(task_id, f"生成完成，共 {len(created_questions)} 个问题")
         
     except TaskCancelledError:
-        db.rollback()
+        try:
+            db.rollback()
+        except Exception:
+            pass
         task_manager.mark_cancelled(task_id, "测试集生成已取消")
         task_manager.append_log(task_id, "任务已取消，停止生成")
-        _cleanup_failed_generated_testset(db, testset_id, user_id, allow_delete=not had_existing_questions)
+        # 取消时不清理已保存的问题（支持后续续传）
+        task_manager.update_context_info(task_id, {
+            "generated_count": len(created_questions),
+            "target_count": target_count if 'target_count' in dir() else num_questions,
+            "distribution_mode": distribution_mode,
+        })
     except Exception as e:
-        db.rollback()
+        try:
+            db.rollback()
+        except Exception:
+            pass
         task_manager.fail_task(task_id, str(e))
         task_manager.append_log(task_id, f"生成失败: {e}")
-        _cleanup_failed_generated_testset(db, testset_id, user_id, allow_delete=not had_existing_questions)
+        # 失败时不清理已保存的问题（支持后续续传）
+        task_manager.update_context_info(task_id, {
+            "generated_count": len(created_questions),
+            "target_count": target_count if 'target_count' in dir() else num_questions,
+            "distribution_mode": distribution_mode,
+        })
     finally:
-        db.close()
+        try:
+            db.close()
+        except Exception:
+            pass
 
 
 @router.post("/{testset_id}/generate_async")
@@ -1069,6 +1621,39 @@ async def retry_task(
         raise HTTPException(status_code=400, detail=str(e))
 
 
+@router.get("/tasks")
+async def list_tasks(
+    current_user: User = Depends(get_current_active_user)
+):
+    """获取用户最近的任务列表（用于前端刷新恢复）。"""
+    tasks = task_manager.list_recent_tasks(limit=20)
+    # 过滤：只返回当前用户相关的任务
+    user_id = str(current_user.id)
+    user_tasks = []
+    for t in tasks:
+        params = t.get("params") or {}
+        task_user_id = str(params.get("user_id") or "")
+        if task_user_id == user_id or not task_user_id:
+            user_tasks.append(t)
+    return {"tasks": user_tasks}
+
+
+@router.post("/tasks/{task_id}/resume")
+async def resume_task(
+    task_id: str,
+    current_user: User = Depends(get_current_active_user)
+):
+    """断点续传：从上次失败处继续生成，保留已生成的问题。"""
+    task = task_manager.get_task(task_id)
+    if not task:
+        raise HTTPException(status_code=404, detail="任务不存在")
+    _ensure_task_access(task, str(current_user.id))
+    try:
+        return task_manager.resume_task(task_id)
+    except RuntimeError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+
+
 @router.post("/{testset_id}/generate")
 async def generate_questions(
     testset_id: UUID,
@@ -1078,6 +1663,17 @@ async def generate_questions(
 ):
     """生成测试问题（已统一为异步任务链路）"""
     return _submit_generation_task(testset_id, request, current_user, db)
+
+
+@router.post("/{testset_id}/generate_conversation")
+async def generate_conversation_cases(
+    testset_id: UUID,
+    request: GenerateConversationRequest,
+    current_user: User = Depends(get_current_active_user),
+    db: Session = Depends(get_db)
+):
+    """异步生成多轮会话 case。"""
+    return _submit_conversation_generation_task(testset_id, request, current_user, db)
 
 
 @router.post("/{testset_id}/questions")
@@ -1247,32 +1843,171 @@ async def export_testset(
         TestSetModel.id == str(testset_id),
         TestSetModel.user_id == current_user.id
     ).first()
-    
+
     if not testset:
         raise HTTPException(status_code=404, detail="测试集不存在")
-    
-    questions = db.query(Question).filter(Question.testset_id == str(testset_id)).all()
+
+    is_conversation_mode = str(testset.conversation_mode or "single_turn").strip() == "multi_turn"
+    questions: List[Question] = []
+    conversation_cases: List[ConversationTestCase] = []
+    conversation_turns: List[ConversationTurn] = []
+    chunk_map: Dict[str, DocumentChunk] = {}
+
+    if is_conversation_mode:
+        conversation_cases = db.query(ConversationTestCase).filter(
+            ConversationTestCase.testset_id == str(testset_id)
+        ).all()
+        case_ids = [str(item.id) for item in conversation_cases if item.id]
+        if case_ids:
+            conversation_turns = db.query(ConversationTurn).filter(
+                ConversationTurn.case_id.in_(case_ids)
+            ).all()
+        chunk_ids: List[str] = []
+        for case in conversation_cases:
+            if case.anchor_chunk_id:
+                chunk_ids.append(str(case.anchor_chunk_id))
+            for chunk_id in case.support_chunk_ids or []:
+                if chunk_id:
+                    chunk_ids.append(str(chunk_id))
+        if chunk_ids:
+            chunks = db.query(DocumentChunk).filter(
+                DocumentChunk.id.in_(list(dict.fromkeys(chunk_ids)))
+            ).all()
+            chunk_map = {str(chunk.id): chunk for chunk in chunks}
+    else:
+        questions = db.query(Question).filter(Question.testset_id == str(testset_id)).all()
+
     main_document = None
     if testset.document_id:
         main_document = db.query(Document).filter(Document.id == testset.document_id).first()
+
     doc_ids_in_meta = set()
-    for q in questions:
-        meta = q.question_metadata if isinstance(q.question_metadata, dict) else {}
-        doc_ids = meta.get("doc_ids") or meta.get("document_ids") or []
-        if isinstance(doc_ids, list):
-            for d in doc_ids:
-                if d:
-                    doc_ids_in_meta.add(str(d))
-        one_doc_id = meta.get("doc_id")
-        if one_doc_id:
-            doc_ids_in_meta.add(str(one_doc_id))
+
+    if is_conversation_mode:
+        for case in conversation_cases:
+            case_meta = case.case_metadata if isinstance(case.case_metadata, dict) else {}
+            support_document_ids = case_meta.get("support_document_ids") or []
+            if isinstance(support_document_ids, list):
+                for doc_id in support_document_ids:
+                    if doc_id:
+                        doc_ids_in_meta.add(str(doc_id))
+            anchor_document_id = case_meta.get("anchor_document_id")
+            if anchor_document_id:
+                doc_ids_in_meta.add(str(anchor_document_id))
+            if case.anchor_chunk_id and str(case.anchor_chunk_id) in chunk_map:
+                chunk = chunk_map[str(case.anchor_chunk_id)]
+                if chunk.document_id:
+                    doc_ids_in_meta.add(str(chunk.document_id))
+            for chunk_id in case.support_chunk_ids or []:
+                chunk = chunk_map.get(str(chunk_id))
+                if chunk and chunk.document_id:
+                    doc_ids_in_meta.add(str(chunk.document_id))
+    else:
+        for q in questions:
+            meta = q.question_metadata if isinstance(q.question_metadata, dict) else {}
+            doc_ids = meta.get("doc_ids") or meta.get("document_ids") or []
+            if isinstance(doc_ids, list):
+                for d in doc_ids:
+                    if d:
+                        doc_ids_in_meta.add(str(d))
+            one_doc_id = meta.get("doc_id")
+            if one_doc_id:
+                doc_ids_in_meta.add(str(one_doc_id))
+
     if testset.document_id:
         doc_ids_in_meta.add(str(testset.document_id))
+
     document_name_map = {}
+    document_category_map = {}
     if doc_ids_in_meta:
         docs = db.query(Document).filter(Document.id.in_(list(doc_ids_in_meta))).all()
         document_name_map = {str(d.id): (d.filename or "") for d in docs}
-    
+        document_category_map = {str(d.id): (d.category or "未分类") for d in docs}
+
+    if testset.document_id and str(testset.document_id) not in document_category_map:
+        main_doc = db.query(Document).filter(Document.id == testset.document_id).first()
+        if main_doc:
+            document_category_map[str(main_doc.id)] = main_doc.category or "未分类"
+
+    def parse_category_levels(category: str):
+        if not category or category == "未分类":
+            return "", "", ""
+        parts = category.split("/")
+        if len(parts) >= 3:
+            return parts[0], parts[1], parts[2]
+        elif len(parts) == 2:
+            return parts[0], parts[1], ""
+        elif len(parts) == 1:
+            return parts[0], "", ""
+        return "", "", ""
+
+    def ensure_str_list(value: Any) -> List[str]:
+        if value is None:
+            return []
+        if isinstance(value, list):
+            values = value
+        else:
+            values = [value]
+        items: List[str] = []
+        for item in values:
+            text = str(item or "").strip()
+            if text:
+                items.append(text)
+        return items
+
+    def uniq(values: List[str]) -> List[str]:
+        return list(dict.fromkeys(values))
+
+    def join_text(values: List[str], sep: str = " | ") -> str:
+        return sep.join([value for value in values if value])
+
+    def build_bg_lines(meta: Dict[str, Any]) -> List[str]:
+        """构建背景信息行"""
+        lines: List[str] = []
+        field_map = [
+            ("product_name", "产品"),
+            ("product_entities", "相关产品实体"),
+            ("doc_type", "文档类型"),
+            ("purpose_summary", "文档用途"),
+            ("section_level", "章节层级"),
+            ("section_title", "章节"),
+            ("breadcrumb_path", "章节路径"),
+            ("knowledge_type", "知识类型"),
+            ("section_summary", "摘要"),
+            ("key_terms", "关键术语"),
+            ("channel", "渠道"),
+            ("section_tags", "章节标签"),
+        ]
+        for key, label in field_map:
+            value = meta.get(key)
+            if value is None or value == "":
+                continue
+            if isinstance(value, list):
+                if not value:
+                    continue
+                value = "、".join(str(v) for v in value if v is not None and str(v).strip())
+                if not value:
+                    continue
+            lines.append(f"{label}: {value}")
+        return lines
+
+    def format_chunk_with_bg(chunk: DocumentChunk, is_anchor: bool = False) -> str:
+        """格式化切片内容，包含背景信息"""
+        meta = chunk.chunk_metadata if isinstance(chunk.chunk_metadata, dict) else {}
+        header_lines = [
+            f"[{'锚点' if is_anchor else '辅助'}] {document_name_map.get(str(chunk.document_id), '') or ('切片 ' + str(chunk.id))}",
+            f"chunk_id: {chunk.id or ''}",
+            f"sequence_number: {chunk.sequence_number or ''}",
+        ]
+        
+        bg_lines = build_bg_lines(meta)
+        content = str(chunk.content or "").strip()
+        text_parts = ["\n".join(header_lines)]
+        if bg_lines:
+            text_parts.append("【背景信息】\n" + "\n".join(bg_lines))
+        text_parts.append("【正文】\n" + content)
+        return "\n\n".join(part for part in text_parts if part.strip())
+
     if evaluation_id:
         latest_eval = db.query(EvaluationModel).filter(
             EvaluationModel.id == str(evaluation_id),
@@ -1288,11 +2023,27 @@ async def export_testset(
             EvaluationModel.status == 'completed'
         ).order_by(EvaluationModel.timestamp.desc()).first()
 
-    base_headers = ["问题ID", "问题", "问题类型", "参考答案", "模型答案", "切片内容", "来源文档", "角色画像"]
+    base_headers = [
+        "Case ID",
+        "Turn序号",
+        "一级分类",
+        "二级分类",
+        "三级分类",
+        "来源文档",
+        "问题",
+        "问题类型",
+        "参考答案",
+        "模型答案",
+        "切片内容",
+        "会话ID(前)",
+        "会话ID(后)",
+        "角色画像",
+    ]
     metric_keys: List[str] = []
     metric_headers: List[str] = []
     reason_headers: List[str] = []
-    eval_results_map = {}
+    eval_results_map: Dict[str, EvaluationResultModel] = {}
+    conversation_turn_results_map: Dict[str, ConversationTurnResult] = {}
     header_name_map = {
         "answer_relevance": "答案相关性",
         "context_relevance": "检索相关性",
@@ -1309,98 +2060,213 @@ async def export_testset(
         "context_relevance_reason": "检索相关性评分依据",
         "context_precision_reason": "检索精确性评分依据"
     }
-    
+
     if latest_eval:
-        metric_keys = latest_eval.evaluation_metrics or []
-        metric_headers = [header_name_map.get(m, m) for m in metric_keys]
-        reason_headers = [header_name_map.get(f"{m}_reason", f"{header_name_map.get(m, m)}评分依据") for m in metric_keys]
-        
-        results = db.query(EvaluationResultModel).filter(
-            EvaluationResultModel.evaluation_id == latest_eval.id
-        ).all()
-        for r in results:
-            eval_results_map[r.question_id] = r
+        if is_conversation_mode:
+            turn_results = db.query(ConversationTurnResult).join(
+                ConversationExecution,
+                ConversationTurnResult.execution_id == ConversationExecution.id
+            ).filter(
+                ConversationExecution.evaluation_id == str(latest_eval.id)
+            ).all()
+            conversation_turn_results_map = {
+                str(result.turn_id): result
+                for result in turn_results
+                if result.turn_id
+            }
+        else:
+            metric_keys = latest_eval.evaluation_metrics or []
+            metric_headers = [header_name_map.get(m, m) for m in metric_keys]
+            reason_headers = [header_name_map.get(f"{m}_reason", f"{header_name_map.get(m, m)}评分依据") for m in metric_keys]
+
+            results = db.query(EvaluationResultModel).filter(
+                EvaluationResultModel.evaluation_id == latest_eval.id
+            ).all()
+            for r in results:
+                if r.question_id:
+                    eval_results_map[str(r.question_id)] = r
+
+    turns_by_case: Dict[str, List[ConversationTurn]] = {}
+    if conversation_turns:
+        for turn in conversation_turns:
+            turns_by_case.setdefault(str(turn.case_id), []).append(turn)
+        for case_id, items in turns_by_case.items():
+            turns_by_case[case_id] = sorted(items, key=lambda item: item.turn_index or 0)
 
     output = io.StringIO()
     writer = csv.writer(output)
     writer.writerow(base_headers + metric_headers + reason_headers)
-    for q in questions:
-        normalized_type, normalized_major, normalized_minor = _normalize_question_category(
-            q.question_type, q.category_major, q.category_minor
-        )
-        if normalized_major and normalized_minor:
-            unified_question_type = f"{normalized_major}-{normalized_minor}"
-        elif normalized_minor:
-            unified_question_type = normalized_minor
-        elif normalized_major:
-            unified_question_type = normalized_major
-        else:
-            unified_question_type = normalized_type or ""
 
-        meta = q.question_metadata if isinstance(q.question_metadata, dict) else {}
-        source_document = ""
-        filenames = meta.get("filenames")
-        if isinstance(filenames, list):
-            source_document = " | ".join([str(x).strip() for x in filenames if str(x).strip()])
-        if not source_document:
-            source_document = str(meta.get("filename") or "").strip()
-        if not source_document:
-            source_documents = meta.get("source_documents")
-            if isinstance(source_documents, list):
-                source_document = " | ".join([str(x).strip() for x in source_documents if str(x).strip()])
-            elif isinstance(source_documents, str):
-                source_document = source_documents.strip()
-        if not source_document:
+    if is_conversation_mode:
+        ordered_cases = sorted(
+            conversation_cases,
+            key=lambda item: (
+                item.created_at or datetime.min,
+                str(item.id)
+            )
+        )
+        for case in ordered_cases:
+            case_meta = case.case_metadata if isinstance(case.case_metadata, dict) else {}
+            source_chunks: List[DocumentChunk] = []
+            if case.anchor_chunk_id and str(case.anchor_chunk_id) in chunk_map:
+                source_chunks.append(chunk_map[str(case.anchor_chunk_id)])
+            for chunk_id in case.support_chunk_ids or []:
+                chunk = chunk_map.get(str(chunk_id))
+                if chunk:
+                    source_chunks.append(chunk)
+
+            source_document_names = uniq([
+                document_name_map.get(str(chunk.document_id), "").strip()
+                for chunk in source_chunks
+                if chunk.document_id
+            ])
+            if not source_document_names:
+                source_document_names = uniq([
+                    document_name_map.get(doc_id, "").strip()
+                    for doc_id in ensure_str_list(case_meta.get("support_document_ids")) + ensure_str_list(case_meta.get("anchor_document_id"))
+                    if document_name_map.get(doc_id, "").strip()
+                ])
+            if not source_document_names and main_document and main_document.filename:
+                source_document_names = [main_document.filename]
+
+            category = "未分类"
+            for chunk in source_chunks:
+                if chunk.document_id and str(chunk.document_id) in document_category_map:
+                    category = document_category_map[str(chunk.document_id)]
+                    break
+            if category == "未分类":
+                for doc_id in ensure_str_list(case_meta.get("anchor_document_id")) + ensure_str_list(case_meta.get("support_document_ids")):
+                    if doc_id in document_category_map:
+                        category = document_category_map[doc_id]
+                        break
+            if category == "未分类" and main_document:
+                category = document_category_map.get(str(main_document.id), "未分类")
+
+            level1, level2, level3 = parse_category_levels(category)
+            source_chunk_text = "\n\n".join([
+                format_chunk_with_bg(chunk, is_anchor=(str(chunk.id) == str(case.anchor_chunk_id)))
+                for chunk in source_chunks
+            ])
+
+            for turn in turns_by_case.get(str(case.id), []):
+                turn_meta = turn.turn_metadata if isinstance(turn.turn_metadata, dict) else {}
+                turn_result = conversation_turn_results_map.get(str(turn.id))
+                row_data = [
+                    str(case.id),
+                    turn.turn_index or "",
+                    level1,
+                    level2,
+                    level3,
+                    join_text(source_document_names),
+                    turn.question or "",
+                    "",
+                    turn.expected_answer or "",
+                    (turn_result.generated_answer or "") if turn_result else "",
+                    source_chunk_text,
+                    (turn_result.session_id_before or "") if turn_result else "",
+                    (turn_result.session_id_after or "") if turn_result else "",
+                    "",
+                ]
+                writer.writerow(row_data)
+    else:
+        for q in questions:
+            normalized_type, normalized_major, normalized_minor = _normalize_question_category(
+                q.question_type, q.category_major, q.category_minor
+            )
+            if normalized_major and normalized_minor:
+                unified_question_type = f"{normalized_major}-{normalized_minor}"
+            elif normalized_minor:
+                unified_question_type = normalized_minor
+            elif normalized_major:
+                unified_question_type = normalized_major
+            else:
+                unified_question_type = normalized_type or ""
+
+            meta = q.question_metadata if isinstance(q.question_metadata, dict) else {}
+            source_document = ""
+            filenames = meta.get("filenames")
+            if isinstance(filenames, list):
+                source_document = " | ".join([str(x).strip() for x in filenames if str(x).strip()])
+            if not source_document:
+                source_document = str(meta.get("filename") or "").strip()
+            if not source_document:
+                source_documents = meta.get("source_documents")
+                if isinstance(source_documents, list):
+                    source_document = " | ".join([str(x).strip() for x in source_documents if str(x).strip()])
+                elif isinstance(source_documents, str):
+                    source_document = source_documents.strip()
+            if not source_document:
+                ids = meta.get("doc_ids") or meta.get("document_ids") or []
+                if not isinstance(ids, list):
+                    ids = [ids] if ids else []
+                one_doc_id = meta.get("doc_id")
+                if one_doc_id:
+                    ids.append(one_doc_id)
+                names = [document_name_map.get(str(d), "").strip() for d in ids if str(d).strip()]
+                names = [n for n in names if n]
+                if names:
+                    source_document = " | ".join(list(dict.fromkeys(names)))
+            if not source_document and main_document and main_document.filename:
+                source_document = main_document.filename
+
+            persona_profile = ""
+            persona_name = str(meta.get("persona_name") or "").strip()
+            persona_description = str(meta.get("persona_description") or "").strip()
+            if persona_name and persona_description:
+                persona_profile = f"{persona_name}：{persona_description}"
+            elif persona_name:
+                persona_profile = persona_name
+            elif persona_description:
+                persona_profile = persona_description
+
+            category = "未分类"
             ids = meta.get("doc_ids") or meta.get("document_ids") or []
             if not isinstance(ids, list):
                 ids = [ids] if ids else []
             one_doc_id = meta.get("doc_id")
             if one_doc_id:
                 ids.append(one_doc_id)
-            names = [document_name_map.get(str(d), "").strip() for d in ids if str(d).strip()]
-            names = [n for n in names if n]
-            if names:
-                source_document = " | ".join(list(dict.fromkeys(names)))
-        if not source_document and main_document and main_document.filename:
-            source_document = main_document.filename
+            for did in ids:
+                if str(did) in document_category_map:
+                    category = document_category_map[str(did)]
+                    break
+            if category == "未分类" and main_document:
+                category = document_category_map.get(str(main_document.id), "未分类")
 
-        persona_profile = ""
-        persona_name = str(meta.get("persona_name") or "").strip()
-        persona_description = str(meta.get("persona_description") or "").strip()
-        if persona_name and persona_description:
-            persona_profile = f"{persona_name}：{persona_description}"
-        elif persona_name:
-            persona_profile = persona_name
-        elif persona_description:
-            persona_profile = persona_description
+            level1, level2, level3 = parse_category_levels(category)
+            eval_row = eval_results_map.get(str(q.id)) if latest_eval else None
+            model_answer = (eval_row.generated_answer or "") if eval_row else (q.answer or "")
 
-        eval_row = eval_results_map.get(str(q.id)) if latest_eval else None
-        model_answer = (eval_row.generated_answer or "") if eval_row else (q.answer or "")
+            row_data = [
+                f"q:{q.id}",
+                1,
+                level1,
+                level2,
+                level3,
+                source_document,
+                q.question or "",
+                unified_question_type,
+                q.expected_answer or "",
+                model_answer,
+                q.context or "",
+                "",
+                "",
+                persona_profile
+            ]
 
-        row_data = [
-            q.id,
-            q.question or "",
-            unified_question_type,
-            q.expected_answer or "",
-            model_answer,
-            q.context or "",
-            source_document,
-            persona_profile
-        ]
+            if latest_eval:
+                metrics_dict = eval_row.metrics if eval_row and isinstance(eval_row.metrics, dict) else {}
+                reasons_dict = eval_row.reasons if eval_row and isinstance(eval_row.reasons, dict) else {}
 
-        if latest_eval:
-            metrics_dict = eval_row.metrics if eval_row and isinstance(eval_row.metrics, dict) else {}
-            reasons_dict = eval_row.reasons if eval_row and isinstance(eval_row.reasons, dict) else {}
-            
-            for m in metric_keys:
-                val = metrics_dict.get(m, "")
-                row_data.append(str(val) if val is not None else "")
-                
-            for m in metric_keys:
-                reason_val = reasons_dict.get(m, "")
-                row_data.append(str(reason_val) if reason_val is not None else "")
+                for m in metric_keys:
+                    val = metrics_dict.get(m, "")
+                    row_data.append(str(val) if val is not None else "")
 
-        writer.writerow(row_data)
+                for m in metric_keys:
+                    reason_val = reasons_dict.get(m, "")
+                    row_data.append(str(reason_val) if reason_val is not None else "")
+
+            writer.writerow(row_data)
 
     csv_content = output.getvalue()
     output.close()
@@ -1665,4 +2531,115 @@ async def start_execution(
         "execution_id": str(execution_eval.id),
         "execution_testset_id": str(execution_testset.id),
         "message": "测试集执行任务已创建，请轮询状态"
+    }
+
+
+@router.post("/{testset_id}/conversation_execution/start")
+async def start_conversation_execution(
+    testset_id: UUID,
+    request: ExecuteConversationTestsetRequest,
+    current_user: User = Depends(get_current_active_user),
+    db: Session = Depends(get_db)
+):
+    """启动多轮测试集执行任务。"""
+    testset = db.query(TestSetModel).filter(
+        TestSetModel.id == str(testset_id),
+        TestSetModel.user_id == current_user.id
+    ).first()
+
+    if not testset:
+        raise HTTPException(status_code=404, detail="测试集不存在")
+    if str(testset.conversation_mode or "single_turn").strip() != "multi_turn":
+        raise HTTPException(status_code=400, detail="当前测试集不是多轮模式")
+
+    case_count = db.query(ConversationTestCase).filter(
+        ConversationTestCase.testset_id == str(testset.id)
+    ).count()
+    if case_count <= 0:
+        raise HTTPException(status_code=400, detail="当前测试集没有多轮 case，无法执行")
+
+    root_info = _resolve_root_info(testset)
+    execution_no = _next_execution_no(db, str(current_user.id), root_info["root_testset_id"])
+    clone_name = f"{_short_display_name(root_info['root_name'])}#E{execution_no:02d}"
+    execution_testset = _clone_conversation_testset(
+        db,
+        testset,
+        user_id=str(current_user.id),
+        stage="evaluation",
+        clone_name=clone_name,
+        extra_metadata={
+            "root_testset_id": root_info["root_testset_id"],
+            "root_name": root_info["root_name"],
+            "execution_no": execution_no,
+            "display_name": clone_name,
+            "execution_source_testset_id": str(testset.id),
+            "execution_created_at": datetime.now().isoformat(),
+        }
+    )
+    db.commit()
+    db.refresh(execution_testset)
+
+    total_turns = db.query(ConversationTurn).join(
+        ConversationTestCase,
+        ConversationTurn.case_id == ConversationTestCase.id
+    ).filter(
+        ConversationTestCase.testset_id == str(execution_testset.id)
+    ).count()
+    execution_eval = EvaluationModel(
+        user_id=current_user.id,
+        testset_id=str(execution_testset.id),
+        evaluation_method=EXECUTION_EVAL_METHOD,
+        evaluation_mode="deepeval_conversation",
+        total_questions=total_turns,
+        evaluated_questions=0,
+        eval_config={
+            "source": "talk_api",
+            "bot_id": request.bot_id,
+            "source_testset_id": str(testset.id),
+            "execution_testset_id": str(execution_testset.id),
+            "conversation_execution": True,
+        },
+        status="pending"
+    )
+    db.add(execution_eval)
+    db.commit()
+    db.refresh(execution_eval)
+
+    execution = ConversationExecution(
+        testset_id=str(execution_testset.id),
+        evaluation_id=str(execution_eval.id),
+        user_id=str(current_user.id),
+        status="pending",
+        execution_metadata={
+            "source_testset_id": str(testset.id),
+            "execution_testset_id": str(execution_testset.id),
+            "case_count": case_count,
+            "turn_count": total_turns,
+            "bot_id": request.bot_id,
+        },
+    )
+    db.add(execution)
+    db.commit()
+    db.refresh(execution)
+
+    task_id = task_manager.submit_task(
+        task_type="execute_conversation_testset",
+        params={
+            "testset_id": str(execution_testset.id),
+            "source_testset_id": str(testset.id),
+            "execution_id": str(execution.id),
+            "execution_evaluation_id": str(execution_eval.id),
+            "user_id": str(current_user.id),
+            "mobile": request.mobile,
+            "verify_code": request.verify_code,
+            "bot_id": request.bot_id,
+        }
+    )
+
+    return {
+        "task_id": task_id,
+        "execution_id": str(execution.id),
+        "execution_evaluation_id": str(execution_eval.id),
+        "execution_testset_id": str(execution_testset.id),
+        "message": "多轮测试集执行任务已创建，请轮询状态"
     }
