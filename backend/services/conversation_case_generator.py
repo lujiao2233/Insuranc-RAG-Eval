@@ -29,6 +29,35 @@ logger = get_logger("conversation_case_generator")
 class ConversationCaseGenerator:
     """多轮会话 case 生成服务。"""
 
+    def _get_concurrency_config(self, user_id: str) -> int:
+        """从系统配置获取并发生成数"""
+        default_concurrency = 3
+        if not user_id:
+            return default_concurrency
+        
+        db = None
+        try:
+            from config.database import SessionLocal
+            from services.config_service import ConfigService
+            
+            db = SessionLocal()
+            cs = ConfigService(db)
+            conc_str = cs.get_config_value(user_id, "generation.concurrency", str(default_concurrency))
+            try:
+                concurrency = max(1, min(10, int(float(conc_str))))
+            except (ValueError, TypeError):
+                concurrency = default_concurrency
+            return concurrency
+        except Exception as e:
+            logger.warning(f"获取并发配置失败，使用默认值: {e}")
+            return default_concurrency
+        finally:
+            if db:
+                try:
+                    db.close()
+                except Exception:
+                    pass
+
     def generate_cases(
         self,
         testset_id: str,
@@ -81,16 +110,34 @@ class ConversationCaseGenerator:
             generated_cases: List[Dict[str, Any]] = []
             skipped_case_count = 0
 
-            for index, cluster in enumerate(clusters, start=1):
+            # 获取并发配置
+            concurrency = self._get_concurrency_config(user_id)
+            logger.info(f"多轮 case 并发生成启动: 总计划={total_steps}个, 并发数={concurrency}")
+
+            import threading
+            from concurrent.futures import ThreadPoolExecutor, as_completed
+            
+            _progress_lock = threading.Lock()
+            _completed_count = 0
+
+            def _generate_one_case(index: int, cluster: ChunkCluster) -> Optional[Dict[str, Any]]:
+                """生成单个case（并发安全）"""
+                nonlocal _completed_count
+                
                 self._check_cancelled(task_id)
+                
+                with _progress_lock:
+                    _completed_count += 1
+                    current_count = _completed_count
+                
                 self._update_progress(
                     task_id,
-                    min(0.1 + (index - 1) / max(total_steps, 1) * 0.8, 0.95),
-                    f"正在生成第 {index}/{total_steps} 个多轮 case",
-                    current_step=index - 1,
+                    min(0.1 + (current_count - 1) / max(total_steps, 1) * 0.8, 0.95),
+                    f"正在生成第 {current_count}/{total_steps} 个多轮 case",
+                    current_step=current_count - 1,
                     total_steps=total_steps,
                     context_info={
-                        "current_case": index,
+                        "current_case": current_count,
                         "current_turn": 0,
                         "total_cases": total_steps,
                         "session_id": "",
@@ -98,7 +145,7 @@ class ConversationCaseGenerator:
                 )
                 self._append_log(
                     task_id,
-                    f"生成 case {index}/{total_steps}: type={cluster.case_type}, anchor={cluster.anchor_chunk.get('id')}",
+                    f"生成 case {current_count}/{total_steps}: type={cluster.case_type}, anchor={cluster.anchor_chunk.get('id')}",
                 )
 
                 try:
@@ -108,41 +155,40 @@ class ConversationCaseGenerator:
                         min_turns=min_turns,
                         max_turns=max_turns,
                     )
-                    generated_cases.append(
-                        {
-                            "cluster": cluster,
-                            "case_dict": case_dict,
-                        }
-                    )
+                    return {
+                        "cluster": cluster,
+                        "case_dict": case_dict,
+                    }
                 except Exception as exc:
-                    skipped_case_count += 1
                     self._append_log(
                         task_id,
-                        f"跳过 case {index}/{total_steps}: {exc}",
+                        f"跳过 case {current_count}/{total_steps}: {exc}",
                     )
                     logger.warning(
                         "多轮 case 生成失败，已跳过该 case: index=%s/%s, type=%s, anchor=%s, error=%s",
-                        index,
+                        current_count,
                         total_steps,
                         cluster.case_type,
                         cluster.anchor_chunk.get("id"),
                         exc,
                     )
-                    continue
+                    return None
 
-                self._update_progress(
-                    task_id,
-                    min(0.1 + index / max(total_steps, 1) * 0.8, 0.95),
-                    f"已生成 {index}/{total_steps} 个多轮 case",
-                    current_step=index,
-                    total_steps=total_steps,
-                    context_info={
-                        "current_case": index,
-                        "current_turn": 0,
-                        "total_cases": total_steps,
-                        "session_id": "",
-                    },
-                )
+            # 并发生成
+            with ThreadPoolExecutor(max_workers=concurrency) as executor:
+                _future_to_idx = {
+                    executor.submit(_generate_one_case, index, cluster): index
+                    for index, cluster in enumerate(clusters, start=1)
+                }
+                for _future in as_completed(_future_to_idx):
+                    _idx = _future_to_idx[_future]
+                    try:
+                        _result = _future.result()
+                        if _result is not None:
+                            generated_cases.append(_result)
+                    except Exception as e:
+                        skipped_case_count += 1
+                        logger.error(f"多轮 case 并发生成异常: idx={_idx}, error={e}")
 
             self._check_cancelled(task_id)
             if not generated_cases:

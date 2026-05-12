@@ -548,6 +548,7 @@ const lastSubmitPayload = ref<null | {
   personaJson: string
 }>(null)
 let pollingTimer: number | null = null
+let hasShownCompletionNotification = false
 
 // 进度信息
 const progressInfo = reactive({
@@ -928,13 +929,16 @@ const pollTaskStatus = (taskId: string, initialLogIndex = 0) => {
         syncTaskStoreStatus(taskId, task, taskName, createdTestsetId.value || '')
         taskStore.updateTask(taskId, { progress: 100, status: 'completed' })
 
-        ElNotification({
-          title: '生成成功',
-          message: isConversationResultMode.value
-            ? `已生成 ${generatedConversationCaseCount.value} 个多轮 Case，请点击“查看测试集详情”继续`
-            : `已生成 ${generatedQuestions.value.length} 个问题，请点击“查看测试集详情”继续`,
-          type: 'success'
-        })
+        if (!hasShownCompletionNotification) {
+          hasShownCompletionNotification = true
+          ElNotification({
+            title: '生成成功',
+            message: isConversationResultMode.value
+              ? `已生成 ${generatedConversationCaseCount.value} 个多轮 Case，请点击"查看测试集详情"继续`
+              : `已生成 ${generatedQuestions.value.length} 个问题，请点击"查看测试集详情"继续`,
+            type: 'success'
+          })
+        }
         return
       }
 
@@ -1023,6 +1027,7 @@ const restoreGenerationSession = async () => {
     generatedQuestions.value = []
     generatedConversationCaseCount.value = 0
     generationFailed.value = false
+    hasShownCompletionNotification = false
     progressInfo.total = getExpectedTotalFromPayload(payload)
     progressInfo.current = 0
     progressInfo.logs = task.logs ? [...task.logs] : []
@@ -1084,6 +1089,7 @@ const restoreGenerationSession = async () => {
 
 const submitGeneration = async (payload: GenerationPayload) => {
   clearGenerationSession()
+  hasShownCompletionNotification = false
   generating.value = true
   resultMode.value = payload.generationMode
   generationFailed.value = false
@@ -1111,7 +1117,10 @@ const submitGeneration = async (payload: GenerationPayload) => {
         ? `自动生成的多轮测试集，预计 ${payload.numCases} 个 Case`
         : payload.distributionMode === 'per_doc'
           ? `自动生成的测试集，每文档${payload.questionsPerDoc}题`
-          : `自动生成的测试集，共${payload.numTotalQuestions}题`
+          : `自动生成的测试集，共${payload.numTotalQuestions}题`,
+      metadata: {
+        document_ids: payload.documentIds
+      }
     })
     createdTestsetId.value = testSet.id
     progressInfo.stage = '开始生成'

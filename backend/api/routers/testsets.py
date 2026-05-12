@@ -868,7 +868,7 @@ async def create_testset(
         question_count=0,
         generation_method=testset_data.generation_method or "qwen_model",
         testset_metadata={
-            **(testset_data.metadata if hasattr(testset_data, "metadata") and isinstance(testset_data.metadata, dict) else {}),
+            **(testset_data.model_dump().get("metadata") or testset_data.model_dump().get("testset_metadata") or {}),
             "lifecycle_stage": "base"
         }
     )

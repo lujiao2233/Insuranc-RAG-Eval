@@ -204,7 +204,14 @@ const MODULE_LABEL_MAP: Record<string, string> = {
   outline_generation: '文档分析',
   testset_gen: '测试集生成',
   evaluation: '评估',
-  unknown: '文档分析(未标注)'
+  unknown: '文档分析(未标注)',
+  conversation_case_self_check: '多轮问题生成',
+  conversation_case_generation: '多轮问题生成',
+  conversation_dependency_hint: '多轮问题生成',
+  conversation_case_supplement: '多轮问题生成',
+  conversation_expected_answer_regen: '多轮问题生成',
+  document_analysis_chunk: '文档分析',
+  document_analysis_outline: '文档分析'
 }
 
 const getModuleLabel = (moduleName: string) => MODULE_LABEL_MAP[moduleName] || moduleName
