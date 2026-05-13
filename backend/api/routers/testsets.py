@@ -1077,12 +1077,14 @@ class ExecuteTestsetRequest(BaseModel):
     mobile: str
     verify_code: str
     bot_id: str
+    api_type: Optional[str] = "default"
 
 
 class ExecuteConversationTestsetRequest(BaseModel):
     mobile: str
     verify_code: str
     bot_id: str
+    api_type: Optional[str] = "default"
 
 
 def _submit_generation_task(
@@ -2323,14 +2325,15 @@ def _run_execution_task(
     user_id: str,
     mobile: str,
     verify_code: str,
-    bot_id: str
+    bot_id: str,
+    api_type: str | None = None
 ):
     """后台任务：执行测试集并获取回答"""
     db = SessionLocal()
     try:
         task_manager.ensure_not_cancelled(task_id)
         task_manager.update_status(task_id, "running")
-        task_manager.append_log(task_id, f"正在初始化API客户端 (手机号: {mobile}, BOT_ID: {bot_id})...")
+        task_manager.append_log(task_id, f"正在初始化API客户端 (手机号: {mobile}, BOT_ID: {bot_id}, API路径: {api_type or 'default'})...")
         started_at = datetime.now()
         
         testset = db.query(TestSetModel).filter(
@@ -2349,7 +2352,7 @@ def _run_execution_task(
         execution_eval.status = "running"
         db.commit()
             
-        client = TalkApiClient(mobile=mobile, bot_id=bot_id)
+        client = TalkApiClient(mobile=mobile, bot_id=bot_id, api_type=api_type)
         
         try:
             login_resp = client.phone_login(verify_code)
@@ -2522,7 +2525,8 @@ async def start_execution(
             "user_id": str(current_user.id),
             "mobile": request.mobile,
             "verify_code": request.verify_code,
-            "bot_id": request.bot_id
+            "bot_id": request.bot_id,
+            "api_type": request.api_type
         }
     )
     
@@ -2633,6 +2637,7 @@ async def start_conversation_execution(
             "mobile": request.mobile,
             "verify_code": request.verify_code,
             "bot_id": request.bot_id,
+            "api_type": request.api_type,
         }
     )
 

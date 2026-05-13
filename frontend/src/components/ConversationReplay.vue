@@ -11,7 +11,7 @@
           <div class="question-panel">
             <div class="panel-header">
               <span>用户问题</span>
-              <el-tag v-if="turn.dependency_type" size="small" type="info">{{ turn.dependency_type }}</el-tag>
+              <el-tag v-if="turn.dependency_type" size="small" type="info">{{ getDependencyTypeName(turn.dependency_type) }}</el-tag>
             </div>
             <div class="panel-text">{{ turn.question_text || '-' }}</div>
             <div v-if="turn.context_hint" class="panel-hint">{{ turn.context_hint }}</div>
@@ -97,12 +97,23 @@ const getMetricType = (value?: number) => {
 
 const getMetricName = (key: string) => {
   const metricNames: Record<string, string> = {
-    knowledge_retention: 'Knowledge Retention',
-    conversation_relevancy: 'Conversation Relevancy',
-    conversation_completeness: 'Conversation Completeness',
-    role_adherence: 'Role Adherence'
+    knowledge_retention: '知识保持度',
+    conversation_relevancy: '会话相关性',
+    conversation_completeness: '会话完整性',
+    role_adherence: '角色遵循度'
   }
   return metricNames[key] || key
+}
+
+const getDependencyTypeName = (type: string) => {
+  const typeNames: Record<string, string> = {
+    'no_dependency': '无依赖',
+    'contextual': '上下文依赖',
+    'entity_reference': '实体引用',
+    'logical_followup': '逻辑追问',
+    'clarification': '澄清追问'
+  }
+  return typeNames[type] || type
 }
 
 const resolveRefs = (turn: ConversationEvaluationTurnResult): string[] => {

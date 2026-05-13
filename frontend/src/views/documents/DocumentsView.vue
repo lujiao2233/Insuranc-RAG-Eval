@@ -223,14 +223,13 @@
 <script setup lang="ts">
 import { ref, onMounted, onUnmounted, watch } from 'vue'
 import { useRouter } from 'vue-router'
-import { ElMessage, ElMessageBox, ElLoading } from 'element-plus'
+import { ElMessage, ElMessageBox } from 'element-plus'
 import { Upload, Search, UploadFilled } from '@element-plus/icons-vue'
 import { useDocumentStore } from '@/stores/document'
 import { documentApi } from '@/api/documents'
 import { useTaskStore } from '@/stores/task'
-import { formatDateTime } from '@/utils/format'
 import { useCategoryHierarchy } from '@/composables/useCategoryHierarchy'
-import type { UploadFile } from 'element-plus'
+import type { UploadFile, UploadInstance } from 'element-plus'
 import type { Document } from '@/types'
 
 const router = useRouter()
@@ -245,14 +244,14 @@ const currentPage = ref(1)
 const showUploadDialog = ref(false)
 const uploading = ref(false)
 const selectedFiles = ref<File[]>([])
-const uploadRef = ref()
+const uploadRef = ref<UploadInstance>()
 const isAnalyzing = ref<Record<string, boolean>>({})
 const uploadCategoryPath = ref<string[]>([])
 const showCustomCategory = ref(false)
 const customCategory = ref('')
 const multipleSelection = ref<Document[]>([])
 const batchOperation = ref('')
-let pollingTimer: any = null
+let pollingTimer: ReturnType<typeof setInterval> | null = null
 let pollingStartedAt = 0
 const MAX_POLLING_DURATION_MS = 15 * 60 * 1000
 
@@ -432,8 +431,8 @@ const getUnifiedStatus = (doc: Document): 'unanalyzed' | 'processing' | 'active'
   return 'active'
 }
 
-const getCategoryType = (category: string) => {
-  const types: Record<string, string> = {
+const getCategoryType = (category: string): '' | 'success' | 'warning' | 'info' | 'danger' | 'primary' => {
+  const types: Record<string, '' | 'success' | 'warning' | 'info' | 'danger' | 'primary'> = {
     '内部产品': 'primary',
     '外部产品': 'success',
     '公司制度': 'warning',
@@ -441,7 +440,7 @@ const getCategoryType = (category: string) => {
     '其他': 'info',
     '未分类': 'info'
   }
-  return (types[category] || 'info') as any
+  return types[category] || 'info'
 }
 
 const formatCategoryPath = (category: string): string => {
@@ -502,6 +501,7 @@ const handlePageChange = (page: number) => {
 
 const fetchDocuments = () => {
   return documentStore.fetchDocuments({
+    search: searchText.value || undefined,
     status: statusFilter.value === 'unanalyzed' ? 'active' : (statusFilter.value || undefined),
     is_analyzed: statusFilter.value === 'unanalyzed' ? false : (statusFilter.value === 'active' ? true : undefined),
     category: getCategoryFilterValue()
@@ -757,14 +757,10 @@ const handleDelete = async (doc: Document) => {
 }
 
 const handleFileChange = (file: UploadFile) => {
-  console.log('handleFileChange called:', file)
-  console.log('file.raw:', file?.raw)
   if (file.raw) {
     if (!selectedFiles.value.some(f => f.name === file.raw!.name && f.size === file.raw!.size)) {
       selectedFiles.value.push(file.raw!)
     }
-  } else {
-    console.log('file.raw is undefined!')
   }
 }
 
@@ -780,7 +776,7 @@ const handleCategoryChange = (values: string[]) => {
   }
 }
 
-const filterMethod = (node: any, keyword: string) => {
+const filterMethod = (node: { text?: string }, keyword: string) => {
   const text = node.text?.toLowerCase() || ''
   return text.includes(keyword.toLowerCase())
 }
@@ -796,25 +792,15 @@ const getCategoryValue = (): string => {
 }
 
 const handleUpload = async () => {
-  console.log('handleUpload called')
-  console.log('selectedFiles:', selectedFiles.value)
-  
   if (!selectedFiles.value || selectedFiles.value.length === 0) {
     ElMessage.warning('请选择要上传的文件')
     return
   }
   
   uploading.value = true
-  console.log('Starting upload for:', selectedFiles.value.length, 'files')
-  
   const finalCategory = getCategoryValue()
   
   try {
-    const formData = new FormData()
-    selectedFiles.value.forEach(file => formData.append('files', file))
-    formData.append('category', finalCategory)
-    formData.append('analyze', 'false')
-    
     await documentStore.uploadDocumentsBatch(selectedFiles.value, finalCategory)
     
     ElMessage.success(`成功上传 ${selectedFiles.value.length} 个文件`)
@@ -826,7 +812,6 @@ const handleUpload = async () => {
     uploadRef.value?.clearFiles()
     fetchDocuments()
   } catch (error) {
-    console.error('Upload error:', error)
     ElMessage.error('上传失败')
   } finally {
     uploading.value = false

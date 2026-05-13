@@ -34,6 +34,20 @@
           <el-input v-model="executionForm.botId" placeholder="例如: 1018" />
           <div class="form-help">说明: 1038 东吴宝典标签，1042 东吴宝典工作流，1018 东吴宝典，1043 问综合工作流</div>
         </el-form-item>
+        <el-form-item label="API路径">
+          <el-radio-group v-model="executionForm.apiType">
+            <el-radio-button label="default">默认路径</el-radio-button>
+            <el-radio-button label="dwtsbuddy">dwtsbuddy路径</el-radio-button>
+          </el-radio-group>
+          <div class="form-help">
+            <template v-if="executionForm.apiType === 'default'">
+              SSE: /talk/createSse | 对话: /talk/chat
+            </template>
+            <template v-else>
+              SSE: /dwtsbuddy/chat/sse | 对话: /dwtsbuddy/chat
+            </template>
+          </div>
+        </el-form-item>
         <el-form-item>
           <el-button type="primary" @click="handleStartExecution">开始执行</el-button>
         </el-form-item>
@@ -123,7 +137,8 @@ let countdownTimer: number | null = null
 const executionForm = reactive({
   mobile: '13141802889',
   verifyCode: '',
-  botId: '1018'
+  botId: '1018',
+  apiType: 'default'
 })
 
 const executionInfo = reactive({
@@ -391,12 +406,14 @@ const handleStartExecution = async () => {
       ? await testsetApi.startConversationExecution(id, {
           mobile: executionForm.mobile,
           verify_code: executionForm.verifyCode,
-          bot_id: executionForm.botId
+          bot_id: executionForm.botId,
+          api_type: executionForm.apiType
         })
       : await testsetApi.startExecution(id, {
           mobile: executionForm.mobile,
           verify_code: executionForm.verifyCode,
-          bot_id: executionForm.botId
+          bot_id: executionForm.botId,
+          api_type: executionForm.apiType
         })
     const { task_id, execution_testset_id, execution_id } = response as any
     if (execution_testset_id) {

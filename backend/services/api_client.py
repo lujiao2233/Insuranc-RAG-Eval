@@ -28,7 +28,7 @@ from requests.exceptions import ChunkedEncodingError
 import urllib3
 from urllib3.exceptions import InsecureRequestWarning
 
-from services.api_config import BASE_URL, CHANNEL, USER_TYPE
+from services.api_config import BASE_URL, CHANNEL, USER_TYPE, API_PATHS, DEFAULT_API_TYPE
 
 
 logger = logging.getLogger(__name__)
@@ -66,13 +66,14 @@ class TalkApiClient:
     批量问答处理等。
     """
     
-    def __init__(self, session: requests.Session | None = None, mobile: str | None = None, bot_id: str | None = None):
+    def __init__(self, session: requests.Session | None = None, mobile: str | None = None, bot_id: str | None = None, api_type: str | None = None):
         """初始化API客户端
         
         Args:
             session: 可选的requests会话对象，如果为None则创建新会话
             mobile: 可选的手机号码，如果为None则使用配置文件中的默认值
             bot_id: 机器人的BOT_ID
+            api_type: API路径类型，可选值为 "default" 或 "dwtsbuddy"
         """
         setup_logging()
         self.session = session or requests.Session()
@@ -89,7 +90,15 @@ class TalkApiClient:
         self.bot_id = bot_id
         self.user_type = USER_TYPE
         self.token: str | None = None
-        logger.info("TalkApiClient initialized for mobile %s and bot_id %s", self.mobile, self.bot_id)
+        
+        # 设置API路径类型
+        self.api_type = api_type or DEFAULT_API_TYPE
+        if self.api_type not in API_PATHS:
+            logger.warning(f"未知的api_type: {self.api_type}, 使用默认值: {DEFAULT_API_TYPE}")
+            self.api_type = DEFAULT_API_TYPE
+        self.api_paths = API_PATHS[self.api_type]
+        
+        logger.info("TalkApiClient initialized for mobile %s, bot_id %s, api_type %s", self.mobile, self.bot_id, self.api_type)
         self._load_token_from_cache()
 
     def _url(self, path: str) -> str:
@@ -265,7 +274,7 @@ class TalkApiClient:
         try:
             logger.info("Checking token validity via createSse")
             resp = self.session.post(
-                self._url("/talk/createSse"),
+                self._url(self.api_paths["sse_path"]),
                 json={"visitorBizId": self.mobile, "userType": self.user_type},
                 headers=self._auth_headers(),
                 timeout=10,
@@ -312,7 +321,7 @@ class TalkApiClient:
             "userType": self.user_type,
         }
         resp = self.session.post(
-            self._url("/talk/createSse"),
+            self._url(self.api_paths["sse_path"]),
             json=payload,
             headers=self._auth_headers(),
             timeout=10,
@@ -332,7 +341,7 @@ class TalkApiClient:
             "userType": self.user_type,
         }
         resp = self.session.post(
-            self._url("/talk/createSse"),
+            self._url(self.api_paths["sse_path"]),
             json=payload,
             headers=self._auth_headers(),
             timeout=None,
@@ -372,7 +381,7 @@ class TalkApiClient:
             "paramJsonStr": (None, json.dumps(payload, ensure_ascii=False)),
         }
         resp = self.session.post(
-            self._url("/talk/chat"),
+            self._url(self.api_paths["chat_path"]),
             files=files,
             headers=self._auth_headers(),
             timeout=30,

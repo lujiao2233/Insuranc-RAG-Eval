@@ -125,10 +125,10 @@
                     />
                   </el-select>
                   <el-select v-model="conversationSortMetric" placeholder="按指标排序" style="width: 220px">
-                    <el-option label="Conversation Completeness" value="conversation_completeness" />
-                    <el-option label="Knowledge Retention" value="knowledge_retention" />
-                    <el-option label="Conversation Relevancy" value="conversation_relevancy" />
-                    <el-option label="Role Adherence" value="role_adherence" />
+                    <el-option label="会话完整性" value="conversation_completeness" />
+                    <el-option label="知识保持度" value="knowledge_retention" />
+                    <el-option label="会话相关性" value="conversation_relevancy" />
+                    <el-option label="角色遵循度" value="role_adherence" />
                   </el-select>
                 </div>
               </div>
@@ -141,7 +141,7 @@
               >
                 <template #title>
                   <div class="conversation-case-title">
-                    <span class="case-title-text">{{ caseItem.case_title || `Case ${caseItem.case_id}` }}</span>
+                    <span class="case-title-text">{{ formatCaseTitle(caseItem.case_title, caseItem.case_id) }}</span>
                     <div class="case-score-tags">
                       <el-tag size="small" type="warning">
                         完整性 {{ formatMetricNumber(caseItem.case_metrics?.conversation_completeness) }}
@@ -353,10 +353,10 @@ const getMetricName = (key: string): string => {
     toxicity: '有害言论检测',
     bias: '偏见检测',
     hallucination: '幻觉检测',
-    knowledge_retention: 'Knowledge Retention',
-    conversation_relevancy: 'Conversation Relevancy',
-    conversation_completeness: 'Conversation Completeness',
-    role_adherence: 'Role Adherence',
+    knowledge_retention: '知识保持度',
+    conversation_relevancy: '会话相关性',
+    conversation_completeness: '会话完整性',
+    role_adherence: '角色遵循度',
     ragas_score: '综合评分',
     overall_score: '综合评分',
     total: '总分',
@@ -405,9 +405,30 @@ const totalConversationTurns = computed(() => conversationResults.value.reduce((
 
 const parseConversationCaseType = (caseItem: ConversationEvaluationCaseResult) => {
   const raw = String(caseItem.case_title || '').trim()
-  if (!raw) return 'unknown'
+  if (!raw) return '未知'
   if (raw.startsWith('Conversation Case:')) {
-    return raw.replace('Conversation Case:', '').trim() || 'unknown'
+    const caseType = raw.replace('Conversation Case:', '').trim()
+    const typeNames: Record<string, string> = {
+      'single_chunk_deep': '单切片深挖',
+      'same_doc_chain': '同文档链式',
+      'cross_doc_assoc': '跨文档关联'
+    }
+    return typeNames[caseType] || caseType || '未知'
+  }
+  return raw
+}
+
+const formatCaseTitle = (title: string | undefined, caseId: string) => {
+  const raw = String(title || '').trim()
+  if (!raw) return `Case ${caseId}`
+  if (raw.startsWith('Conversation Case:')) {
+    const caseType = raw.replace('Conversation Case:', '').trim()
+    const typeNames: Record<string, string> = {
+      'single_chunk_deep': '单切片深挖',
+      'same_doc_chain': '同文档链式',
+      'cross_doc_assoc': '跨文档关联'
+    }
+    return `会话案例: ${typeNames[caseType] || caseType}`
   }
   return raw
 }

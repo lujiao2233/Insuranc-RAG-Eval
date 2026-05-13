@@ -1,5 +1,6 @@
 import { request } from './index'
 import type { Document, PaginatedResponse, TaskStatus } from '@/types'
+import type { AxiosProgressEvent } from 'axios'
 
 export const documentApi = {
   getDocuments(params: {
@@ -8,6 +9,7 @@ export const documentApi = {
     status?: string
     is_analyzed?: boolean
     category?: string
+    search?: string
   }): Promise<PaginatedResponse<Document>> {
     return request.get('/documents/', params)
   },
@@ -22,7 +24,7 @@ export const documentApi = {
     formData.append('category', category)
     return request.post('/documents/upload', formData, {
       headers: { 'Content-Type': 'multipart/form-data' },
-      onUploadProgress: (progressEvent) => {
+      onUploadProgress: (progressEvent: AxiosProgressEvent) => {
         if (onProgress) {
           const percentCompleted = Math.round((progressEvent.loaded * 100) / (progressEvent.total || 1))
           onProgress(percentCompleted)

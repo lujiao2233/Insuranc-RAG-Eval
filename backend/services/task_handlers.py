@@ -43,6 +43,7 @@ def _run_execute_testset(params: Dict[str, Any], task_id: str) -> None:
         str(params["mobile"]),
         str(params["verify_code"]),
         str(params["bot_id"]),
+        api_type=params.get("api_type"),
     )
 
 
@@ -118,6 +119,7 @@ def _run_execute_conversation_testset(params: Dict[str, Any], task_id: str) -> N
         str(params["verify_code"]),
         str(params["bot_id"]),
         task_id=task_id,
+        api_type=params.get("api_type"),
     )
 
 

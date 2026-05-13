@@ -28,7 +28,7 @@ export const useDocumentStore = defineStore('document', () => {
     documents.value.filter(d => !d.is_analyzed).length
   )
 
-  async function fetchDocuments(params?: { status?: string; is_analyzed?: boolean }) {
+  async function fetchDocuments(params?: { status?: string; is_analyzed?: boolean; search?: string; category?: string }) {
     loading.value = true
     error.value = null
     

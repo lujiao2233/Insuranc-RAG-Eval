@@ -33,6 +33,7 @@ class MultiTurnConversationExecutor:
         verify_code: str,
         bot_id: str,
         task_id: str | None = None,
+        api_type: str | None = None,
     ) -> None:
         db = SessionLocal()
         try:
@@ -81,9 +82,9 @@ class MultiTurnConversationExecutor:
             db.commit()
 
             if task_id:
-                task_manager.append_log(task_id, f"正在初始化多轮执行客户端 (手机号: {mobile}, BOT_ID: {bot_id})...")
+                task_manager.append_log(task_id, f"正在初始化多轮执行客户端 (手机号: {mobile}, BOT_ID: {bot_id}, API路径: {api_type or 'default'})...")
 
-            client = TalkApiClient(mobile=mobile, bot_id=bot_id)
+            client = TalkApiClient(mobile=mobile, bot_id=bot_id, api_type=api_type)
             login_resp = client.phone_login(verify_code)
             if not login_resp.get("success"):
                 raise RuntimeError(f"登录失败: {login_resp}")
