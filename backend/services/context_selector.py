@@ -18,6 +18,8 @@ from services.chunking_service import ChunkingService
 
 logger = get_logger("context_selector")
 
+DEFAULT_SELECTION_MIN_CHARS = 100
+
 
 class ContextSelector:
     """上下文选择器类
@@ -35,6 +37,14 @@ class ContextSelector:
 
     def _get_chunk_text(self, chunk: Dict[str, Any]) -> str:
         return str(chunk.get("chunk") or chunk.get("content") or "")
+
+    def _get_chunk_length(self, chunk: Dict[str, Any]) -> int:
+        raw_length = chunk.get("content_length")
+        try:
+            return max(int(raw_length), 0)
+        except Exception:
+            pass
+        return len(self._get_chunk_text(chunk).replace("\n", "").strip())
 
     def _get_chunk_meta(self, chunk: Dict[str, Any]) -> Dict[str, Any]:
         meta = chunk.get("chunk_metadata")
@@ -467,15 +477,20 @@ class ContextSelector:
         
         return questions
     
-    def select_multi_doc_contexts(self, chunks: List[Dict[str, Any]], num_docs: int = 2) -> Tuple[List[Dict[str, Any]], str]:
+    def select_multi_doc_contexts(
+        self,
+        chunks: List[Dict[str, Any]],
+        num_docs: int = 2,
+        selection_min_chars: int = DEFAULT_SELECTION_MIN_CHARS,
+    ) -> Tuple[List[Dict[str, Any]], str]:
         """
         选择多文档上下文用于问题生成
         返回选定的chunks和关系类型
         """
-        selection_min_chars = 30
+        selection_min_chars = max(int(selection_min_chars or DEFAULT_SELECTION_MIN_CHARS), 0)
         filtered_chunks = [
             c for c in chunks
-            if len(self._get_chunk_text(c).replace("\n", "").strip()) >= selection_min_chars
+            if self._get_chunk_length(c) >= selection_min_chars
         ]
         if len(filtered_chunks) >= num_docs:
             chunks = filtered_chunks

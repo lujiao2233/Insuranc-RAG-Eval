@@ -25,6 +25,7 @@ def _run_generate_questions(params: Dict[str, Any], task_id: str) -> None:
         str(params.get("generation_mode") or "advanced"),
         bool(params.get("enable_safety_robustness", True)),
         float(params.get("multi_doc_ratio", 0.1)),
+        int(params.get("selection_min_chunk_chars", 100)),
         params.get("document_ids"),
         params.get("persona_list"),
         distribution_mode=str(params.get("distribution_mode") or "total"),
@@ -44,6 +45,7 @@ def _run_execute_testset(params: Dict[str, Any], task_id: str) -> None:
         str(params["verify_code"]),
         str(params["bot_id"]),
         api_type=params.get("api_type"),
+        skip_answered=bool(params.get("skip_answered", False)),
     )
 
 
@@ -120,6 +122,7 @@ def _run_execute_conversation_testset(params: Dict[str, Any], task_id: str) -> N
         str(params["bot_id"]),
         task_id=task_id,
         api_type=params.get("api_type"),
+        skip_answered=bool(params.get("skip_answered", False)),
     )
 
 

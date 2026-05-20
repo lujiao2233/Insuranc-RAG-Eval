@@ -215,7 +215,7 @@ def _clone_to_report_testset(db: Session, source_testset: TestSet, user_id: str,
             category_major=q.category_major,
             category_minor=q.category_minor,
             expected_answer=q.expected_answer,
-            answer=None,
+            answer=q.answer,
             context=q.context,
             question_metadata=cloned_meta
         )
@@ -320,19 +320,21 @@ def _load_latest_conversation_execution(
 def _build_conversation_cases_for_evaluation(
     db: Session,
     report_testset_id: str,
-    source_execution_id: str,
+    source_execution_id: str | None,
 ) -> List[Dict[str, Any]]:
     cases = db.query(ConversationTestCase).filter(
         ConversationTestCase.testset_id == str(report_testset_id)
     ).all()
-    turn_results = db.query(ConversationTurnResult).filter(
-        ConversationTurnResult.execution_id == str(source_execution_id)
-    ).all()
-    source_turn_result_map = {
-        str(item.turn_id): item
-        for item in turn_results
-        if item.turn_id
-    }
+    source_turn_result_map: Dict[str, ConversationTurnResult] = {}
+    if source_execution_id:
+        turn_results = db.query(ConversationTurnResult).filter(
+            ConversationTurnResult.execution_id == str(source_execution_id)
+        ).all()
+        source_turn_result_map = {
+            str(item.turn_id): item
+            for item in turn_results
+            if item.turn_id
+        }
 
     payloads: List[Dict[str, Any]] = []
     for case in cases:
@@ -344,23 +346,31 @@ def _build_conversation_cases_for_evaluation(
             turn_meta = turn.turn_metadata if isinstance(turn.turn_metadata, dict) else {}
             source_turn_id = str(turn_meta.get("source_turn_id") or turn.id or "")
             turn_result = source_turn_result_map.get(source_turn_id)
+            csv_answer = str(turn_meta.get("answer") or "").strip()
+            csv_context = str(turn_meta.get("context") or "").strip()
+            generated_answer = (turn_result.generated_answer or "") if turn_result else csv_answer
+            refs = (turn_result.refs or "") if turn_result else ""
+            session_id_before = (turn_result.session_id_before or "") if turn_result else ""
+            session_id_after = (turn_result.session_id_after or "") if turn_result else ""
             turn_payloads.append(
                 {
                     "turn_id": str(turn.id),
                     "turn_index": int(turn.turn_index or 0),
                     "question": turn.question or "",
                     "expected_answer": turn.expected_answer or "",
-                    "generated_answer": (turn_result.generated_answer or "") if turn_result else "",
+                    "generated_answer": generated_answer,
                     "dependency_type": turn.dependency_type or "",
-                    "context_hint": turn.context_hint or "",
-                    "refs": (turn_result.refs or "") if turn_result else "",
-                    "session_id_before": (turn_result.session_id_before or "") if turn_result else "",
-                    "session_id_after": (turn_result.session_id_after or "") if turn_result else "",
+                    "context_hint": turn.context_hint or csv_context,
+                    "refs": refs,
+                    "session_id_before": session_id_before,
+                    "session_id_after": session_id_after,
                 }
             )
+        case_meta = case.case_metadata if isinstance(case.case_metadata, dict) else {}
+        original_case_id = str(case_meta.get("case_key") or case.id)
         payloads.append(
             {
-                "case_id": str(case.id),
+                "case_id": original_case_id,
                 "case_type": case.case_type or "",
                 "evaluation_criteria": case.evaluation_criteria or "",
                 "turns": turn_payloads,
@@ -590,6 +600,7 @@ def run_evaluation_task(
         run_config = {
             "timeout": 600,
             "max_workers": 4,
+            "batch_size": int(config_service.get_config(db, "evaluation.batch_size") or 5),
             "user_id": str(evaluation.user_id) if getattr(evaluation, "user_id", None) else None,
             "db_session": db,
             "progress_callback": on_progress,
@@ -705,9 +716,11 @@ def run_conversation_evaluation_task(
             return
 
         eval_config = evaluation.eval_config if isinstance(evaluation.eval_config, dict) else {}
-        source_execution_id = str(eval_config.get("source_execution_id") or "").strip()
-        if not source_execution_id:
-            raise RuntimeError("多轮评估缺少 source_execution_id")
+        source_execution_id = eval_config.get("source_execution_id")
+        if source_execution_id:
+            source_execution_id = str(source_execution_id).strip()
+        else:
+            source_execution_id = None
 
         cases_payload = _build_conversation_cases_for_evaluation(
             db,
@@ -778,7 +791,7 @@ def run_conversation_evaluation_task(
                     case_id=str(case_row.get("case_id") or ""),
                     turn_id=None,
                     question_id=None,
-                    question_text=f"Conversation Case: {case_row.get('case_type') or ''}",
+                    question_text=f"Conversation Case: {case_row.get('case_type') or 'multi_turn'}",
                     expected_answer="",
                     generated_answer="",
                     context=case_row.get("evaluation_criteria", ""),
@@ -1087,7 +1100,10 @@ async def create_conversation_evaluation(
         str(testset.id),
         str(current_user.id),
     )
-    if not latest_execution:
+    
+    is_csv_import = testset.generation_method == "csv_import"
+    
+    if not latest_execution and not is_csv_import:
         raise HTTPException(status_code=400, detail="当前多轮测试集没有可用执行结果，无法评估")
 
     case_count = db.query(ConversationTestCase).filter(
@@ -1096,14 +1112,57 @@ async def create_conversation_evaluation(
     if case_count <= 0:
         raise HTTPException(status_code=400, detail="当前测试集没有多轮 case，无法评估")
 
-    source_results = db.query(ConversationTurnResult).filter(
-        ConversationTurnResult.execution_id == str(latest_execution.id)
-    ).all()
-    if not source_results:
-        raise HTTPException(status_code=400, detail="当前多轮测试集没有执行轮次结果，无法评估")
-    missing_answers = sum(1 for item in source_results if not (item.generated_answer or "").strip())
-    if missing_answers > 0:
-        raise HTTPException(status_code=400, detail=f"执行结果中仍有 {missing_answers} 个 turn 缺少模型回答，无法评估")
+    source_execution_id = str(latest_execution.id) if latest_execution else None
+    
+    if latest_execution:
+        source_results = db.query(ConversationTurnResult).filter(
+            ConversationTurnResult.execution_id == str(latest_execution.id)
+        ).all()
+        if not source_results and not is_csv_import:
+            raise HTTPException(status_code=400, detail="当前多轮测试集没有执行轮次结果，无法评估")
+        missing_answers = sum(1 for item in source_results if not (item.generated_answer or "").strip())
+        
+        if missing_answers > 0 and is_csv_import:
+            cases = db.query(ConversationTestCase).filter(
+                ConversationTestCase.testset_id == str(testset.id)
+            ).all()
+            case_ids = [str(c.id) for c in cases]
+            turns = db.query(ConversationTurn).filter(
+                ConversationTurn.case_id.in_(case_ids)
+            ).all()
+            turn_answer_map = {}
+            for t in turns:
+                turn_meta = t.turn_metadata if isinstance(t.turn_metadata, dict) else {}
+                csv_answer = str(turn_meta.get("answer") or "").strip()
+                if csv_answer:
+                    turn_answer_map[str(t.id)] = csv_answer
+            
+            still_missing = 0
+            for item in source_results:
+                if not (item.generated_answer or "").strip():
+                    csv_ans = turn_answer_map.get(str(item.turn_id))
+                    if not csv_ans:
+                        still_missing += 1
+            if still_missing > 0:
+                raise HTTPException(status_code=400, detail=f"执行结果中仍有 {still_missing} 个 turn 缺少模型回答（CSV中也无答案），无法评估")
+        elif missing_answers > 0:
+            raise HTTPException(status_code=400, detail=f"执行结果中仍有 {missing_answers} 个 turn 缺少模型回答，无法评估")
+    elif is_csv_import:
+        cases = db.query(ConversationTestCase).filter(
+            ConversationTestCase.testset_id == str(testset.id)
+        ).all()
+        case_ids = [str(c.id) for c in cases]
+        turns = db.query(ConversationTurn).filter(
+            ConversationTurn.case_id.in_(case_ids)
+        ).all()
+        missing_csv_answers = 0
+        for t in turns:
+            turn_meta = t.turn_metadata if isinstance(t.turn_metadata, dict) else {}
+            csv_answer = str(turn_meta.get("answer") or "").strip()
+            if not csv_answer:
+                missing_csv_answers += 1
+        if missing_csv_answers > 0:
+            raise HTTPException(status_code=400, detail=f"CSV导入的多轮测试集中有 {missing_csv_answers} 个 turn 缺少模型答案，无法评估")
 
     selected_metrics = _normalize_conversation_metrics(evaluation_data.evaluation_metrics)
     if not selected_metrics:
@@ -1118,7 +1177,7 @@ async def create_conversation_evaluation(
         db,
         testset,
         str(current_user.id),
-        str(latest_execution.id),
+        source_execution_id or "",
     )
     db.commit()
     db.refresh(report_testset)
@@ -1132,7 +1191,7 @@ async def create_conversation_evaluation(
         evaluated_questions=0,
         evaluation_metrics=selected_metrics,
         eval_config={
-            "source_execution_id": str(latest_execution.id),
+            "source_execution_id": source_execution_id,
             "source_testset_id": str(testset.id),
             "report_testset_id": str(report_testset.id),
             "conversation_evaluation": True,

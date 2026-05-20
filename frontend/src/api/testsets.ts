@@ -150,6 +150,7 @@ export const testsetApi = {
     name?: string
     description?: string
     document_id?: string
+    conversation_mode?: string
   }): Promise<TestSet> {
     const formData = new FormData()
     formData.append('file', params.file)
@@ -162,6 +163,9 @@ export const testsetApi = {
     if (params.document_id) {
       formData.append('document_id', params.document_id)
     }
+    if (params.conversation_mode) {
+      formData.append('conversation_mode', params.conversation_mode)
+    }
     return request.post('/testsets/import', formData, {
       headers: { 'Content-Type': 'multipart/form-data' }
     })
@@ -171,11 +175,11 @@ export const testsetApi = {
     return request.post(`/testsets/${testsetId}/execution/send-code`, data)
   },
 
-  startExecution(testsetId: string, data: { mobile: string; verify_code: string; bot_id: string }) {
+  startExecution(testsetId: string, data: { mobile: string; verify_code: string; bot_id: string; api_type?: string; skip_answered?: boolean }) {
     return request.post<{ task_id: string; message: string; execution_testset_id?: string }>(`/testsets/${testsetId}/execution/start`, data)
   },
 
-  startConversationExecution(testsetId: string, data: { mobile: string; verify_code: string; bot_id: string }) {
+  startConversationExecution(testsetId: string, data: { mobile: string; verify_code: string; bot_id: string; api_type?: string; skip_answered?: boolean }) {
     return request.post<{
       task_id: string
       message: string

@@ -241,13 +241,19 @@ class ConversationCaseGenerator:
                 case_ids.append(case_id)
             db.commit()
 
-            testset.question_count = db.query(ConversationTestCase).filter(
+            final_cases = db.query(ConversationTestCase).filter(
                 ConversationTestCase.testset_id == testset_id
-            ).count()
+            ).all()
+            final_case_ids = [str(c.id) for c in final_cases]
+            final_turn_count = db.query(ConversationTurn).filter(
+                ConversationTurn.case_id.in_(final_case_ids)
+            ).count() if final_case_ids else 0
+            testset.question_count = final_turn_count
             testset.conversation_mode = "multi_turn"
             testset.testset_metadata = {
                 **(testset.testset_metadata or {}),
                 "conversation_quality_report": quality_report,
+                "conversation_case_count": len(final_cases),
             }
             db.commit()
 

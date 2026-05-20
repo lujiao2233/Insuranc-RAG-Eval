@@ -1,4 +1,4 @@
-import categoryHierarchy from '../../../category_hierarchy.json'
+import categoryHierarchy from '@/assets/category_hierarchy.json'
 
 interface CategoryNode {
   label: string

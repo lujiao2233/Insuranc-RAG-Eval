@@ -4,10 +4,16 @@
       <template #header>
         <div class="card-header">
           <span class="page-title">测试集管理</span>
-          <el-button type="primary" @click="router.push('/testsets/new')">
-            <el-icon><Plus /></el-icon>
-            新建测试集
-          </el-button>
+          <el-space>
+            <el-button @click="showImportDialog">
+              <el-icon><Upload /></el-icon>
+              上传测试集
+            </el-button>
+            <el-button type="primary" @click="router.push('/testsets/new')">
+              <el-icon><Plus /></el-icon>
+              新建测试集
+            </el-button>
+          </el-space>
         </div>
       </template>
       
@@ -50,6 +56,12 @@
             <el-tag :type="row.conversation_mode === 'multi_turn' ? 'warning' : 'info'">
               {{ row.conversation_mode === 'multi_turn' ? '多轮' : '单轮' }}
             </el-tag>
+          </template>
+        </el-table-column>
+        <el-table-column label="来源" width="80">
+          <template #default="{ row }">
+            <el-tag v-if="isUploadedTestset(row)" type="success" size="small">上传</el-tag>
+            <el-tag v-else type="primary" size="small">生成</el-tag>
           </template>
         </el-table-column>
         <el-table-column label="数量" width="120">
@@ -104,6 +116,54 @@
         />
       </div>
     </el-card>
+    
+    <!-- 上传测试集对话框 -->
+    <el-dialog
+      v-model="importDialogVisible"
+      title="上传测试集"
+      width="550px"
+    >
+      <el-form :model="importForm" label-width="100px">
+        <el-form-item label="CSV文件" required>
+          <el-upload
+            ref="importUploadRef"
+            :auto-upload="false"
+            :limit="1"
+            accept=".csv"
+            :on-change="handleImportFileChange"
+            :on-exceed="() => ElMessage.warning('只能上传一个文件')"
+          >
+            <el-button type="primary" plain>
+              <el-icon><Upload /></el-icon>
+              选择CSV文件
+            </el-button>
+            <template #tip>
+              <div class="el-upload__tip">支持 CSV 格式的测试集文件</div>
+            </template>
+          </el-upload>
+        </el-form-item>
+        <el-form-item label="会话模式">
+          <el-radio-group v-model="importForm.conversationMode">
+            <el-radio value="auto">自动检测</el-radio>
+            <el-radio value="single">单轮</el-radio>
+            <el-radio value="multi">多轮</el-radio>
+          </el-radio-group>
+          <div class="text-xs text-gray-500 mt-1">
+            自动检测：CSV中有"Case ID"列则为多轮模式
+          </div>
+        </el-form-item>
+        <el-form-item label="测试集名称">
+          <el-input v-model="importForm.name" placeholder="留空则使用文件名" />
+        </el-form-item>
+        <el-form-item label="描述">
+          <el-input v-model="importForm.description" type="textarea" :rows="3" placeholder="可选" />
+        </el-form-item>
+      </el-form>
+      <template #footer>
+        <el-button @click="importDialogVisible = false">取消</el-button>
+        <el-button type="primary" :loading="importing" @click="handleImport">上传</el-button>
+      </template>
+    </el-dialog>
     
     <!-- 新建测试集/生成配置对话框 -->
     <el-dialog
@@ -431,7 +491,7 @@
 import { ref, reactive, computed, onMounted, onActivated } from 'vue'
 import { useRouter } from 'vue-router'
 import { ElMessage, ElMessageBox, ElLoading } from 'element-plus'
-import { Plus } from '@element-plus/icons-vue'
+import { Plus, Upload } from '@element-plus/icons-vue'
 import { testsetApi } from '@/api/testsets'
 import { documentApi } from '@/api/documents'
 import { formatDateTime } from '@/utils/format'
@@ -468,6 +528,53 @@ const executionComplete = ref(false)
 const executionFailed = ref(false)
 const currentExecuteTestsetId = ref<string | null>(null)
 const countdown = ref(0)
+
+// 上传测试集相关
+const importDialogVisible = ref(false)
+const importing = ref(false)
+const importUploadRef = ref()
+const importForm = reactive({
+  file: null as File | null,
+  name: '',
+  description: '',
+  conversationMode: 'auto' as 'auto' | 'single' | 'multi'
+})
+
+const showImportDialog = () => {
+  importForm.file = null
+  importForm.name = ''
+  importForm.description = ''
+  importForm.conversationMode = 'auto'
+  importDialogVisible.value = true
+}
+
+const handleImportFileChange = (uploadFile: any) => {
+  importForm.file = uploadFile.raw
+}
+
+const handleImport = async () => {
+  if (!importForm.file) {
+    ElMessage.warning('请选择CSV文件')
+    return
+  }
+  
+  importing.value = true
+  try {
+    const result = await testsetApi.importTestSetCsv({
+      file: importForm.file,
+      name: importForm.name || undefined,
+      description: importForm.description || undefined,
+      conversation_mode: importForm.conversationMode
+    })
+    ElMessage.success(`测试集"${result.name}"上传成功`)
+    importDialogVisible.value = false
+    fetchTestsets()
+  } catch (error: any) {
+    ElMessage.error(error.message || '上传失败')
+  } finally {
+    importing.value = false
+  }
+}
 let countdownTimer: number | null = null
 
 const executionForm = reactive({
@@ -597,8 +704,8 @@ const isUploadedTestset = (testset: TestSet) => {
 const fetchTestsets = async () => {
   loading.value = true
   try {
-    const response = await testsetApi.getTestSets({ stage: 'base' })
-    testsets.value = response.items.filter(item => !isUploadedTestset(item))
+    const response = await testsetApi.getTestSets({})
+    testsets.value = response.items
     filterTestsets()
   } catch (error) {
     ElMessage.error('获取测试集列表失败')

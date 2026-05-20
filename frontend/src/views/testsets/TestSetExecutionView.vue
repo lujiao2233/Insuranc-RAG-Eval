@@ -15,6 +15,14 @@
       </template>
 
       <el-form v-if="!executing && !executionComplete" :model="executionForm" label-width="100px" style="max-width: 680px;">
+        <el-alert
+          v-if="skipAnswered"
+          title="补执行模式：将跳过已有答案的问题，仅执行空答案的问题"
+          type="warning"
+          :closable="false"
+          show-icon
+          style="margin-bottom: 16px;"
+        />
         <el-form-item label="手机号" required>
           <el-input v-model="executionForm.mobile" placeholder="请输入手机号" />
         </el-form-item>
@@ -132,6 +140,7 @@ const executing = ref(false)
 const executionComplete = ref(false)
 const executionFailed = ref(false)
 const countdown = ref(0)
+const skipAnswered = ref(false)
 let countdownTimer: number | null = null
 
 const executionForm = reactive({
@@ -402,18 +411,24 @@ const handleStartExecution = async () => {
 
   try {
     const isConversation = testset.value?.conversation_mode === 'multi_turn'
+    const extraParams: Record<string, any> = {}
+    if (skipAnswered.value) {
+      extraParams.skip_answered = true
+    }
     const response = isConversation
       ? await testsetApi.startConversationExecution(id, {
           mobile: executionForm.mobile,
           verify_code: executionForm.verifyCode,
           bot_id: executionForm.botId,
-          api_type: executionForm.apiType
+          api_type: executionForm.apiType,
+          ...extraParams
         })
       : await testsetApi.startExecution(id, {
           mobile: executionForm.mobile,
           verify_code: executionForm.verifyCode,
           bot_id: executionForm.botId,
-          api_type: executionForm.apiType
+          api_type: executionForm.apiType,
+          ...extraParams
         })
     const { task_id, execution_testset_id, execution_id } = response as any
     if (execution_testset_id) {
@@ -456,6 +471,7 @@ const goToTestsetDetail = () => {
 }
 
 onMounted(() => {
+  skipAnswered.value = route.query.skip_answered === 'true'
   fetchTestset()
 })
 

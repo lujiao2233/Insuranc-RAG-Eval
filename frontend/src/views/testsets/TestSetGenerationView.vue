@@ -78,6 +78,19 @@
               
               <!-- 按总量生成时才显示鲁棒性/安全开关 -->
               <template v-if="form.distributionMode === 'total'">
+                <el-form-item label="多文档关联比例">
+                  <el-slider
+                    v-model="form.multiDocRatio"
+                    :min="0"
+                    :max="100"
+                    :step="5"
+                    show-input
+                    :format-tooltip="(val: number) => `${val}%`"
+                    style="width: 100%;"
+                  />
+                  <div class="form-help">控制跨文档对比、跨文档信息整合等多文档关联问题的占比</div>
+                </el-form-item>
+                
                 <el-form-item label="鲁棒性/输入质量类">
                   <el-switch 
                     v-model="form.enableRobustnessInputQuality"
@@ -236,6 +249,11 @@
           </template>
           <div class="config-form-wrapper" :class="{ 'is-locked': generating }">
             <div class="taxonomy-preview">
+              <div class="taxonomy-actions">
+                <el-button size="small" @click="selectAllMinors">全选</el-button>
+                <el-button size="small" @click="deselectAllMinors">清空</el-button>
+                <span class="selected-count">已选 {{ selectedMinors.size }} / {{ totalMinorCount }} 个分类</span>
+              </div>
               <el-collapse>
                 <el-collapse-item 
                   v-for="(category, index) in taxonomy" 
@@ -244,7 +262,7 @@
                 >
                   <template #title>
                     <span class="taxonomy-major">{{ category.major }}</span>
-                    <el-tag size="small" type="info" class="ml-10">{{ category.minors.length }}个子类</el-tag>
+                    <el-tag size="small" type="info" class="ml-10">{{ getSelectedCountInMajor(category) }}/{{ category.minors.length }}</el-tag>
                   </template>
                   <div class="minor-list">
                     <el-tag 
@@ -252,6 +270,9 @@
                       :key="mi" 
                       size="small" 
                       class="minor-tag"
+                      :class="{ 'minor-tag-selected': selectedMinors.has(minor) }"
+                      :effect="selectedMinors.has(minor) ? 'dark' : 'plain'"
+                      @click="toggleMinor(minor)"
                     >
                       {{ minor }}
                     </el-tag>
@@ -488,6 +509,8 @@ type GenerationPayload = {
   }
   enableSafetyRobustness: boolean
   personaJson: string
+  questionTypes: string[]
+  multiDocRatio: number
 }
 
 type SavedGenerationSession = {
@@ -514,11 +537,40 @@ const form = reactive({
   },
   enableRobustnessInputQuality: false,
   enableComplianceSafety: false,
+  multiDocRatio: 10,
   personaJson: ''
 })
 
 // 分类体系
 const taxonomy = ref<Array<{major: string, minors: string[]}>>([])
+const selectedMinors = ref<Set<string>>(new Set())
+
+const totalMinorCount = computed(() => 
+  taxonomy.value.reduce((sum, cat) => sum + cat.minors.length, 0)
+)
+
+const getSelectedCountInMajor = (category: { major: string; minors: string[] }) => 
+  category.minors.filter(m => selectedMinors.value.has(m)).length
+
+const toggleMinor = (minor: string) => {
+  const newSet = new Set(selectedMinors.value)
+  if (newSet.has(minor)) {
+    newSet.delete(minor)
+  } else {
+    newSet.add(minor)
+  }
+  selectedMinors.value = newSet
+}
+
+const selectAllMinors = () => {
+  const allMinors = new Set<string>()
+  taxonomy.value.forEach(cat => cat.minors.forEach(m => allMinors.add(m)))
+  selectedMinors.value = allMinors
+}
+
+const deselectAllMinors = () => {
+  selectedMinors.value = new Set()
+}
 
 // 状态
 const generating = ref(false)
@@ -546,6 +598,8 @@ const lastSubmitPayload = ref<null | {
   }
   enableSafetyRobustness: boolean
   personaJson: string
+  questionTypes: string[]
+  multiDocRatio: number
 }>(null)
 let pollingTimer: number | null = null
 let hasShownCompletionNotification = false
@@ -764,6 +818,7 @@ const loadTaxonomy = async () => {
       { major: "多文档关联类", minors: ["跨文档对比", "跨文档流程", "跨文档矛盾检查", "跨文档信息整合", "跨文档引用与追踪", "跨文档规则一致性"] }
     ]
   }
+  selectAllMinors()
 }
 
 // 生成测试集
@@ -1147,6 +1202,8 @@ const submitGeneration = async (payload: GenerationPayload) => {
           persona_list: personaList,
           distribution_mode: payload.distributionMode,
           questions_per_doc: payload.distributionMode === 'per_doc' ? payload.questionsPerDoc : undefined,
+          question_types: payload.questionTypes.length > 0 ? payload.questionTypes.join(',') : undefined,
+          multi_doc_ratio: payload.multiDocRatio,
         })
     const { task_id } = taskResponse
     saveGenerationSession(task_id, payload, testSet.id)
@@ -1202,7 +1259,9 @@ const handleGenerate = async () => {
       cross_doc_assoc: Number((form.caseTypeRatioPercent.cross_doc_assoc / 100).toFixed(4))
     },
     enableSafetyRobustness: form.enableRobustnessInputQuality || form.enableComplianceSafety,
-    personaJson: isConversationMode.value ? '' : form.personaJson.trim()
+    personaJson: isConversationMode.value ? '' : form.personaJson.trim(),
+    questionTypes: Array.from(selectedMinors.value),
+    multiDocRatio: form.multiDocRatio / 100
   }
   lastSubmitPayload.value = payload
 
@@ -1599,6 +1658,18 @@ onUnmounted(() => {
     max-height: 520px;
     overflow-y: auto;
     
+    .taxonomy-actions {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      margin-bottom: 10px;
+      
+      .selected-count {
+        font-size: 12px;
+        color: #909399;
+      }
+    }
+    
     .taxonomy-major {
       font-weight: 600;
     }
@@ -1610,6 +1681,17 @@ onUnmounted(() => {
       
       .minor-tag {
         margin: 2px;
+        cursor: pointer;
+        transition: all 0.2s;
+        user-select: none;
+        
+        &:hover {
+          opacity: 0.8;
+        }
+      }
+      
+      .minor-tag-selected {
+        box-shadow: 0 0 0 1px var(--el-color-primary);
       }
     }
   }

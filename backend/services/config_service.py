@@ -310,10 +310,24 @@ class ConfigService:
             if not api_key:
                 return {"success": False, "message": "API密钥未配置"}
             
+            # 清理key：去除首尾空白字符
+            api_key = api_key.strip()
+            
+            logger.info(f"API连通性测试: user_id={user_id}, service={service}, api_key_prefix={api_key[:8]}..., key_len={len(api_key)}")
+            
             if service == "qwen":
                 endpoint = self.get_config_value(user_id, "qwen.api_endpoint", 
                     "https://dashscope.aliyuncs.com/compatible-mode/v1")
                 model = self.get_config_value(user_id, "qwen.generation_model", "qwen3-max")
+                
+                # 处理端点：如果用户配置了完整路径，去除 /chat/completions 后缀
+                if endpoint.endswith("/chat/completions"):
+                    endpoint = endpoint[:-len("/chat/completions")]
+                    logger.info(f"端点已去除 /chat/completions 后缀: {endpoint}")
+                elif endpoint.endswith("/chat/completions/"):
+                    endpoint = endpoint[:-len("/chat/completions/")]
+                
+                logger.info(f"使用端点: {endpoint}, 模型: {model}")
                 
                 from openai import OpenAI
                 client = OpenAI(api_key=api_key, base_url=endpoint)

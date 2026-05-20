@@ -35,6 +35,7 @@ from services.config_service import ConfigService
 from services.advanced_testset_generator import QWEN_TAXONOMY_V1
 from services.api_client import TalkApiClient
 from utils.logger import get_logger
+from utils.category_utils import parse_category_levels, resolve_category_levels_for_export
 
 logger = get_logger("testsets_router")
 
@@ -349,6 +350,10 @@ def _clone_testset_with_questions(
     source_questions = db.query(Question).filter(Question.testset_id == str(source_testset.id)).all()
     for q in source_questions:
         question_meta = q.question_metadata if isinstance(q.question_metadata, dict) else q.question_metadata
+        if isinstance(question_meta, dict):
+            question_meta = {**question_meta, "source_question_id": str(q.id)}
+        else:
+            question_meta = {"source_question_id": str(q.id)}
         cloned_q = Question(
             id=str(uuid.uuid4()),
             testset_id=cloned.id,
@@ -384,7 +389,10 @@ def _clone_conversation_cases(
             support_chunk_ids=list(source_case.support_chunk_ids or []),
             evaluation_criteria=source_case.evaluation_criteria,
             turn_count=source_case.turn_count,
-            case_metadata=dict(source_case.case_metadata or {}),
+            case_metadata={
+                **(dict(source_case.case_metadata or {})),
+                "source_case_id": str(source_case.id),
+            },
         )
         db.add(cloned_case)
         db.flush()
@@ -401,7 +409,10 @@ def _clone_conversation_cases(
                 expected_answer=source_turn.expected_answer,
                 dependency_type=source_turn.dependency_type,
                 context_hint=source_turn.context_hint,
-                turn_metadata=dict(source_turn.turn_metadata or {}),
+                turn_metadata={
+                    **(dict(source_turn.turn_metadata or {})),
+                    "source_turn_id": str(source_turn.id),
+                },
             )
             db.add(cloned_turn)
         cloned_case_count += 1
@@ -549,10 +560,18 @@ async def import_testset_csv(
     name: Optional[str] = Form(None),
     description: Optional[str] = Form(None),
     document_id: Optional[UUID] = Form(None),
+    conversation_mode: Optional[str] = Form(None),
     current_user: User = Depends(get_current_active_user),
     db: Session = Depends(get_db)
 ):
-    """上传并导入测试集CSV（支持model_answer列用于可评估测试集）。"""
+    """上传并导入测试集CSV（支持model_answer列用于可评估测试集）。
+    
+    conversation_mode:
+    - 'auto': 自动检测（CSV中有Case ID列则为多轮）
+    - 'single': 强制单轮模式
+    - 'multi': 强制多轮模式
+    """
+    force_conversation_mode = conversation_mode
     filename = file.filename or ""
     if not filename.lower().endswith(".csv"):
         raise HTTPException(status_code=400, detail="仅支持CSV文件导入")
@@ -591,12 +610,19 @@ async def import_testset_csv(
         raise HTTPException(status_code=400, detail="CSV中没有可导入的数据")
 
     parsed_questions = []
+    csv_category_path = ""
 
     def _pick_value(data: Dict[str, Any], *keys: str) -> str:
+        normalized_data = {k.strip().lower(): (k, v) for k, v in data.items() if k}
         for key in keys:
             value = data.get(key)
             if value is not None and str(value).strip():
                 return str(value).strip()
+            nk = key.strip().lower()
+            if nk in normalized_data:
+                _, v = normalized_data[nk]
+                if v is not None and str(v).strip():
+                    return str(v).strip()
         return ""
 
     has_model_answer = False
@@ -607,11 +633,32 @@ async def import_testset_csv(
 
         input_type = _pick_value(row, "question_type", "问题类型")
         n_type, n_major, n_minor = _normalize_question_category(input_type, None, None)
+        
+        cat_level1 = _pick_value(row, "一级分类", "category_level1", "category_major")
+        cat_level2 = _pick_value(row, "二级分类", "category_level2", "category_minor")
+        cat_level3 = _pick_value(row, "三级分类", "category_level3")
+        
+        if cat_level1 and not csv_category_path:
+            path_parts = [cat_level1]
+            if cat_level2:
+                path_parts.append(cat_level2)
+            if cat_level3:
+                path_parts.append(cat_level3)
+            csv_category_path = "/".join(path_parts)
+        
+        if cat_level1 and not n_major:
+            n_major = cat_level1
+        if cat_level2 and not n_minor:
+            n_minor = cat_level2
+        
         expected_answer = _pick_value(row, "expected_answer", "参考答案")
         answer = _pick_value(row, "model_answer", "answer", "模型答案")
         context = _pick_value(row, "context", "切片内容")
         source_document = _pick_value(row, "source_document", "来源文档")
         persona_profile = _pick_value(row, "persona_profile", "角色画像")
+        
+        case_id_raw = _pick_value(row, "Case ID", "case_id", "会话ID")
+        turn_index_raw = _pick_value(row, "Turn序号", "turn_index", "turn_no")
 
         if answer:
             has_model_answer = True
@@ -623,7 +670,7 @@ async def import_testset_csv(
         if persona_profile:
             metadata["persona_profile"] = persona_profile
 
-        parsed_questions.append({
+        question_data = {
             "question": question_text,
             "question_type": n_type,
             "category_major": n_major,
@@ -631,12 +678,23 @@ async def import_testset_csv(
             "expected_answer": expected_answer,
             "answer": answer,
             "context": context,
-            "metadata": metadata
-        })
+            "metadata": metadata,
+            "case_id": case_id_raw or None,
+            "turn_index": int(turn_index_raw) if turn_index_raw.isdigit() else None,
+            "csv_category_level1": cat_level1,
+            "csv_category_level2": cat_level2,
+            "csv_category_level3": cat_level3,
+            "csv_question_type": input_type,
+            "csv_persona_profile": persona_profile,
+            "csv_context": context
+        }
+        parsed_questions.append(question_data)
 
     if not parsed_questions:
         raise HTTPException(status_code=400, detail="CSV中未找到有效问题，请确认包含问题列")
 
+    has_case_id = any(q.get("case_id") for q in parsed_questions)
+    
     missing_answers = [q for q in parsed_questions if not q["answer"]]
     if missing_answers and has_model_answer:
         raise HTTPException(
@@ -654,6 +712,17 @@ async def import_testset_csv(
 
     testset_name = (name or "").strip() or f"导入测试集_{datetime.now().strftime('%Y%m%d_%H%M%S')}"
     testset_description = (description or "").strip() or "通过CSV导入的测试集"
+    
+    if csv_category_path:
+        document.category = csv_category_path
+    
+    if force_conversation_mode == "single":
+        final_conversation_mode = "single_turn"
+    elif force_conversation_mode == "multi":
+        final_conversation_mode = "multi_turn"
+    else:
+        final_conversation_mode = "multi_turn" if has_case_id else "single_turn"
+    
     testset = TestSetModel(
         id=str(uuid.uuid4()),
         user_id=current_user.id,
@@ -663,31 +732,97 @@ async def import_testset_csv(
         question_count=len(parsed_questions),
         question_types=question_type_count,
         generation_method="csv_import",
+        conversation_mode=final_conversation_mode,
         file_path=filename,
         testset_metadata={
             "imported": True,
             "lifecycle_stage": "evaluation",
             "source_file": filename,
             "has_model_answers": answered_count == len(parsed_questions),
-            "answered_questions": answered_count
+            "answered_questions": answered_count,
+            "category_path": csv_category_path or None
         }
     )
     db.add(testset)
 
-    for item in parsed_questions:
-        question = Question(
-            id=str(uuid.uuid4()),
-            testset_id=testset.id,
-            question=item["question"],
-            question_type=item["question_type"],
-            expected_answer=item["expected_answer"],
-            answer=item["answer"],
-            context=item["context"],
-            question_metadata=item["metadata"] or None,
-            category_major=item["category_major"],
-            category_minor=item["category_minor"]
-        )
-        db.add(question)
+    if final_conversation_mode == "multi_turn":
+        from models.database import ConversationTestCase, ConversationTurn
+        
+        cases_map: Dict[str, List[Dict[str, Any]]] = {}
+        for q in parsed_questions:
+            cid = q.get("case_id") or "default_case"
+            if cid not in cases_map:
+                cases_map[cid] = []
+            cases_map[cid].append(q)
+        
+        for case_idx, (case_key, case_questions) in enumerate(cases_map.items(), start=1):
+            case_questions.sort(key=lambda x: x.get("turn_index") or 0)
+            
+            conv_case = ConversationTestCase(
+                id=str(uuid.uuid4()),
+                testset_id=testset.id,
+                case_type="csv_import",
+                turn_count=len(case_questions),
+                case_metadata={
+                    "case_key": case_key,
+                    "case_index": case_idx
+                }
+            )
+            db.add(conv_case)
+            db.flush()
+            
+            for turn_idx, q in enumerate(case_questions, start=1):
+                turn = ConversationTurn(
+                    id=str(uuid.uuid4()),
+                    case_id=conv_case.id,
+                    turn_index=q.get("turn_index") or turn_idx,
+                    question=q["question"],
+                    expected_answer=q["expected_answer"],
+                    dependency_type="none",
+                    turn_metadata={
+                        "question_type": q["question_type"],
+                        "category_major": q["category_major"],
+                        "category_minor": q["category_minor"],
+                        "answer": q["answer"],
+                        "context": q["context"],
+                        "source_metadata": q.get("metadata"),
+                        "csv_category_level1": q.get("csv_category_level1"),
+                        "csv_category_level2": q.get("csv_category_level2"),
+                        "csv_category_level3": q.get("csv_category_level3"),
+                        "csv_question_type": q.get("csv_question_type"),
+                        "csv_persona_profile": q.get("csv_persona_profile"),
+                        "csv_context": q.get("csv_context")
+                    }
+                )
+                db.add(turn)
+        
+        testset.question_count = sum(len(qs) for qs in cases_map.values())
+        testset.testset_metadata = {
+            **(testset.testset_metadata or {}),
+            "conversation_case_count": len(cases_map),
+        }
+    else:
+        for item in parsed_questions:
+            q_meta = item.get("metadata") or {}
+            q_meta["csv_category_level1"] = item.get("csv_category_level1")
+            q_meta["csv_category_level2"] = item.get("csv_category_level2")
+            q_meta["csv_category_level3"] = item.get("csv_category_level3")
+            q_meta["csv_question_type"] = item.get("csv_question_type")
+            q_meta["csv_persona_profile"] = item.get("csv_persona_profile")
+            q_meta["csv_context"] = item.get("csv_context")
+            question = Question(
+                id=str(uuid.uuid4()),
+                testset_id=testset.id,
+                question=item["question"],
+                question_type=item["question_type"],
+                expected_answer=item["expected_answer"],
+                answer=item["answer"],
+                context=item["context"],
+                question_metadata=q_meta,
+                category_major=item["category_major"],
+                category_minor=item["category_minor"]
+            )
+            db.add(question)
 
     db.commit()
     db.refresh(testset)
@@ -1059,6 +1194,7 @@ class GenerateQuestionsRequest(BaseModel):
     generation_mode: Optional[str] = "advanced"
     enable_safety_robustness: bool = True
     multi_doc_ratio: float = 0.1
+    selection_min_chunk_chars: int = 100
     document_ids: Optional[List[UUID]] = None
     persona_list: Optional[List[Dict[str, Any]]] = None
     distribution_mode: Optional[str] = "total"
@@ -1078,6 +1214,7 @@ class ExecuteTestsetRequest(BaseModel):
     verify_code: str
     bot_id: str
     api_type: Optional[str] = "default"
+    skip_answered: Optional[bool] = False
 
 
 class ExecuteConversationTestsetRequest(BaseModel):
@@ -1085,6 +1222,7 @@ class ExecuteConversationTestsetRequest(BaseModel):
     verify_code: str
     bot_id: str
     api_type: Optional[str] = "default"
+    skip_answered: Optional[bool] = False
 
 
 def _submit_generation_task(
@@ -1125,6 +1263,7 @@ def _submit_generation_task(
             "generation_mode": request.generation_mode,
             "enable_safety_robustness": request.enable_safety_robustness,
             "multi_doc_ratio": request.multi_doc_ratio,
+            "selection_min_chunk_chars": request.selection_min_chunk_chars,
             "document_ids": request_doc_ids or None,
             "persona_list": request.persona_list,
             "distribution_mode": request.distribution_mode or "total",
@@ -1274,6 +1413,7 @@ def _run_generation_task(
     generation_mode: str,
     enable_safety_robustness: bool,
     multi_doc_ratio: float,
+    selection_min_chunk_chars: int,
     document_ids: Optional[List[str]],
     persona_list: Optional[List[Dict[str, Any]]],
     distribution_mode: str = "total",
@@ -1314,6 +1454,7 @@ def _run_generation_task(
             Document.user_id == user_id
         ).all()
         documents_map = {str(d.id): d for d in documents}
+        document_category_map = {str(d.id): str(d.category or "").strip() for d in documents}
         if len(documents_map) != len(target_doc_ids):
             task_manager.fail_task(task_id, "存在无权限或不存在的文档")
             _cleanup_failed_generated_testset(db, testset_id, user_id, allow_delete=not had_existing_questions)
@@ -1411,6 +1552,12 @@ def _run_generation_task(
                         q_dict.get("category_minor")
                     )
                     question_metadata = _build_question_metadata(q_dict)
+                    if isinstance(question_metadata, dict):
+                        q_doc_id = str(question_metadata.get("doc_id") or "").strip()
+                        if q_doc_id and not str(question_metadata.get("category_path") or "").strip():
+                            category_path = document_category_map.get(q_doc_id, "")
+                            if category_path:
+                                question_metadata["category_path"] = category_path
                     question = Question(
                         id=str(uuid.uuid4()),
                         testset_id=testset_id,
@@ -1481,6 +1628,7 @@ def _run_generation_task(
                 "enable_safety_robustness": enable_safety_robustness,
                 "generation_mode": "qwen_llm",
                 "multi_doc_ratio": multi_doc_ratio,
+                "selection_min_chunk_chars": selection_min_chunk_chars,
                 "language": "chinese",
                 "chunk_size": 512,
                 "persona_list": persona_list or [],
@@ -1931,18 +2079,6 @@ async def export_testset(
         if main_doc:
             document_category_map[str(main_doc.id)] = main_doc.category or "未分类"
 
-    def parse_category_levels(category: str):
-        if not category or category == "未分类":
-            return "", "", ""
-        parts = category.split("/")
-        if len(parts) >= 3:
-            return parts[0], parts[1], parts[2]
-        elif len(parts) == 2:
-            return parts[0], parts[1], ""
-        elif len(parts) == 1:
-            return parts[0], "", ""
-        return "", "", ""
-
     def ensure_str_list(value: Any) -> List[str]:
         if value is None:
             return []
@@ -2040,6 +2176,9 @@ async def export_testset(
         "会话ID(前)",
         "会话ID(后)",
         "角色画像",
+        "智能体",
+        "一级标签",
+        "二级标签",
     ]
     metric_keys: List[str] = []
     metric_headers: List[str] = []
@@ -2144,7 +2283,6 @@ async def export_testset(
             if category == "未分类" and main_document:
                 category = document_category_map.get(str(main_document.id), "未分类")
 
-            level1, level2, level3 = parse_category_levels(category)
             source_chunk_text = "\n\n".join([
                 format_chunk_with_bg(chunk, is_anchor=(str(chunk.id) == str(case.anchor_chunk_id)))
                 for chunk in source_chunks
@@ -2153,21 +2291,60 @@ async def export_testset(
             for turn in turns_by_case.get(str(case.id), []):
                 turn_meta = turn.turn_metadata if isinstance(turn.turn_metadata, dict) else {}
                 turn_result = conversation_turn_results_map.get(str(turn.id))
+                turn_reasons = turn_result.reasons if turn_result and isinstance(turn_result.reasons, dict) else {}
+                agent_name = str(turn_reasons.get("agent_name") or "无")
+                yjbq = str(turn_reasons.get("yjbq") or "无")
+                ejbq = str(turn_reasons.get("ejbq") or "无")
+                
+                source_meta = turn_meta.get("source_metadata") or {}
+                level1, level2, level3 = resolve_category_levels_for_export(category, turn_meta, source_meta, case_meta)
+                
+                if testset.generation_method == "csv_import":
+                    csv_case_id = str(case_meta.get("case_key") or case.id)
+                    csv_turn_index = turn_meta.get("turn_index") or turn.turn_index or ""
+                    csv_level1 = str(turn_meta.get("csv_category_level1") or turn_meta.get("category_major") or level1)
+                    csv_level2 = str(turn_meta.get("csv_category_level2") or turn_meta.get("category_minor") or level2)
+                    csv_level3 = str(turn_meta.get("csv_category_level3") or "")
+                    csv_question_type = str(turn_meta.get("csv_question_type") or "")
+                    csv_context = str(turn_meta.get("csv_context") or "")
+                    csv_persona = str(turn_meta.get("csv_persona_profile") or "")
+                    csv_source_doc = ""
+                    if source_meta:
+                        csv_source_doc = str(source_meta.get("source_document") or "").strip()
+                        filenames = source_meta.get("filenames")
+                        if isinstance(filenames, list):
+                            csv_source_doc = " | ".join([str(x).strip() for x in filenames if str(x).strip()])
+                    if not csv_source_doc:
+                        csv_source_doc = join_text(source_document_names)
+                else:
+                    csv_case_id = str(case.id)
+                    csv_turn_index = turn.turn_index or ""
+                    csv_level1 = level1
+                    csv_level2 = level2
+                    csv_level3 = level3
+                    csv_question_type = ""
+                    csv_context = source_chunk_text
+                    csv_persona = ""
+                    csv_source_doc = join_text(source_document_names)
+                
                 row_data = [
-                    str(case.id),
-                    turn.turn_index or "",
-                    level1,
-                    level2,
-                    level3,
-                    join_text(source_document_names),
+                    csv_case_id,
+                    csv_turn_index,
+                    csv_level1,
+                    csv_level2,
+                    csv_level3,
+                    csv_source_doc,
                     turn.question or "",
-                    "",
+                    csv_question_type,
                     turn.expected_answer or "",
-                    (turn_result.generated_answer or "") if turn_result else "",
-                    source_chunk_text,
+                    (turn_result.generated_answer or "") if turn_result else (turn_meta.get("answer") or ""),
+                    csv_context or source_chunk_text,
                     (turn_result.session_id_before or "") if turn_result else "",
                     (turn_result.session_id_after or "") if turn_result else "",
-                    "",
+                    csv_persona,
+                    agent_name,
+                    yjbq,
+                    ejbq,
                 ]
                 writer.writerow(row_data)
     else:
@@ -2235,25 +2412,60 @@ async def export_testset(
             if category == "未分类" and main_document:
                 category = document_category_map.get(str(main_document.id), "未分类")
 
-            level1, level2, level3 = parse_category_levels(category)
+            level1, level2, level3 = resolve_category_levels_for_export(category, meta)
             eval_row = eval_results_map.get(str(q.id)) if latest_eval else None
             model_answer = (eval_row.generated_answer or "") if eval_row else (q.answer or "")
+            eval_reasons = eval_row.reasons if eval_row and isinstance(eval_row.reasons, dict) else {}
+            agent_name = str(eval_reasons.get("agent_name") or "无")
+            yjbq = str(eval_reasons.get("yjbq") or "无")
+            ejbq = str(eval_reasons.get("ejbq") or "无")
+
+            if testset.generation_method == "csv_import":
+                csv_case_id = f"q:{q.id}"
+                csv_turn_index = 1
+                csv_level1 = str(meta.get("csv_category_level1") or q.category_major or level1)
+                csv_level2 = str(meta.get("csv_category_level2") or q.category_minor or level2)
+                csv_level3 = str(meta.get("csv_category_level3") or "")
+                csv_question_type = str(meta.get("csv_question_type") or unified_question_type)
+                csv_context = str(meta.get("csv_context") or q.context or "")
+                csv_persona = str(meta.get("csv_persona_profile") or persona_profile)
+                csv_source_doc = ""
+                if meta:
+                    csv_source_doc = str(meta.get("source_document") or "").strip()
+                    filenames = meta.get("filenames")
+                    if isinstance(filenames, list):
+                        csv_source_doc = " | ".join([str(x).strip() for x in filenames if str(x).strip()])
+                if not csv_source_doc:
+                    csv_source_doc = source_document
+            else:
+                csv_case_id = f"q:{q.id}"
+                csv_turn_index = 1
+                csv_level1 = level1
+                csv_level2 = level2
+                csv_level3 = level3
+                csv_question_type = unified_question_type
+                csv_context = q.context or ""
+                csv_persona = persona_profile
+                csv_source_doc = source_document
 
             row_data = [
-                f"q:{q.id}",
-                1,
-                level1,
-                level2,
-                level3,
-                source_document,
+                csv_case_id,
+                csv_turn_index,
+                csv_level1,
+                csv_level2,
+                csv_level3,
+                csv_source_doc,
                 q.question or "",
-                unified_question_type,
+                csv_question_type,
                 q.expected_answer or "",
                 model_answer,
-                q.context or "",
+                csv_context,
                 "",
                 "",
-                persona_profile
+                csv_persona,
+                agent_name,
+                yjbq,
+                ejbq,
             ]
 
             if latest_eval:
@@ -2326,7 +2538,8 @@ def _run_execution_task(
     mobile: str,
     verify_code: str,
     bot_id: str,
-    api_type: str | None = None
+    api_type: str | None = None,
+    skip_answered: bool = False
 ):
     """后台任务：执行测试集并获取回答"""
     db = SessionLocal()
@@ -2371,6 +2584,46 @@ def _run_execution_task(
             
         # 每次执行都生成独立结果，不写回问题本体
         questions_to_execute = questions
+        source_answered_map: Dict[str, EvaluationResultModel] = {}
+        if skip_answered:
+            source_testset_id = str(execution_eval.eval_config.get("source_testset_id", "")) if execution_eval.eval_config else ""
+            if source_testset_id:
+                source_eval = db.query(EvaluationModel).filter(
+                    EvaluationModel.testset_id == source_testset_id,
+                    EvaluationModel.user_id == user_id,
+                    EvaluationModel.status == "completed"
+                ).order_by(EvaluationModel.timestamp.desc()).first()
+                if source_eval:
+                    answered_results = db.query(EvaluationResultModel).filter(
+                        EvaluationResultModel.evaluation_id == source_eval.id,
+                        EvaluationResultModel.generated_answer.isnot(None),
+                        EvaluationResultModel.generated_answer != ""
+                    ).all()
+                    answered_texts = {r.question_text for r in answered_results if r.question_text}
+                    for r in answered_results:
+                        if r.question_text:
+                            source_answered_map[r.question_text.strip()] = r
+                    questions_to_execute = [q for q in questions if (q.question or "").strip() not in answered_texts]
+            skipped = len(questions) - len(questions_to_execute)
+            if skipped > 0:
+                for q in questions:
+                    q_key = (q.question or "").strip()
+                    src_result = source_answered_map.get(q_key)
+                    if src_result:
+                        copied = EvaluationResultModel(
+                            evaluation_id=execution_evaluation_id,
+                            question_id=q.id,
+                            question_text=q.question or "",
+                            expected_answer=q.expected_answer or "",
+                            context=q.context or "",
+                            generated_answer=src_result.generated_answer or "",
+                            reasons=src_result.reasons,
+                        )
+                        db.add(copied)
+                db.commit()
+                task_manager.append_log(task_id, f"补执行模式：跳过 {skipped} 个已有答案的问题，已复制旧结果，剩余 {len(questions_to_execute)} 个待执行")
+            elif skip_answered:
+                task_manager.append_log(task_id, "补执行模式：未找到可跳过的问题，将执行全部问题")
         total = len(questions_to_execute)
         task_manager.append_log(task_id, f"开始处理，共 {total} 个问题...")
         
@@ -2386,9 +2639,16 @@ def _run_execution_task(
                 )
                 task_manager.append_log(task_id, f"提问 [{idx + 1}/{total}]: {q.question}")
                 
-                answer, status, refs = client.chat_with_answer_with_status(
+                result = client.chat_with_answer_and_agent_info(
                     q.question, listen_seconds=120.0, max_retries=1
                 )
+                answer = result.get("answer", "")
+                status = result.get("status", "failed")
+                refs = result.get("refs", "")
+                agent_id = result.get("agent_id", "")
+                agent_name = result.get("agent_name", "")
+                yjbq = result.get("yjbq", "")
+                ejbq = result.get("ejbq", "")
                 
                 result_row = db.query(EvaluationResultModel).filter(
                     EvaluationResultModel.evaluation_id == execution_evaluation_id,
@@ -2407,7 +2667,11 @@ def _run_execution_task(
                 result_row.context = q.context or ""
                 result_row.reasons = {
                     "execution_status": status,
-                    "refs": refs
+                    "refs": refs,
+                    "agent_id": agent_id,
+                    "agent_name": agent_name,
+                    "yjbq": yjbq,
+                    "ejbq": ejbq
                 }
                     
                 db.commit()
@@ -2526,7 +2790,8 @@ async def start_execution(
             "mobile": request.mobile,
             "verify_code": request.verify_code,
             "bot_id": request.bot_id,
-            "api_type": request.api_type
+            "api_type": request.api_type,
+            "skip_answered": request.skip_answered
         }
     )
     
@@ -2638,6 +2903,7 @@ async def start_conversation_execution(
             "verify_code": request.verify_code,
             "bot_id": request.bot_id,
             "api_type": request.api_type,
+            "skip_answered": request.skip_answered,
         }
     )
 

@@ -424,13 +424,70 @@ class TalkApiClient:
                 if isinstance(item, dict):
                     self._collect_ref_titles_from_object(item, ref_titles)
 
+    def _extract_agent_and_tags(self, raw_events: List[Dict[str, Any]]) -> Dict[str, str]:
+        """从SSE原始事件中提取智能体和标签信息
+        
+        返回:
+            {
+                "agent_id": "1050",
+                "agent_name": "制度规章",
+                "yjbq": "内控制度",
+                "ejbq": "计划财务"
+            }
+        """
+        result = {
+            "agent_id": "",
+            "agent_name": "",
+            "yjbq": "",
+            "ejbq": ""
+        }
+        
+        agent_id_map = {
+            "1048": "保险产品",
+            "1049": "公司公告",
+            "1050": "制度规章",
+            "1051": "综合"
+        }
+        
+        for event in raw_events:
+            raw_text = event.get("raw", "")
+            if not raw_text:
+                continue
+            
+            if "当前使用智能体为:" in raw_text:
+                try:
+                    agent_id = raw_text.split("当前使用智能体为:")[1].strip()
+                    result["agent_id"] = agent_id
+                    result["agent_name"] = agent_id_map.get(agent_id, agent_id)
+                except Exception:
+                    pass
+            
+            if "标签信息:" in raw_text:
+                try:
+                    tag_str = raw_text.split("标签信息:")[1].strip()
+                    if tag_str.startswith("{") and tag_str.endswith("}"):
+                        tag_str = tag_str[1:-1]
+                    for pair in tag_str.split(","):
+                        if "=" in pair:
+                            key, value = pair.split("=", 1)
+                            key = key.strip()
+                            value = value.strip()
+                            if key == "yjbq":
+                                result["yjbq"] = value
+                            elif key == "ejbq":
+                                result["ejbq"] = value
+                except Exception:
+                    pass
+        
+        return result
+
     def _stream_chat_with_details(
         self,
         msg: str,
         *,
         session_id: str = "",
         new_dialog: bool = True,
-        listen_seconds: float = 120.0,
+        listen_seconds: float = 300.0,
         max_retries: int = 1,
     ) -> Dict[str, Any]:
         for attempt in range(max_retries + 1):
@@ -529,6 +586,7 @@ class TalkApiClient:
                     timed_out,
                 )
                 continue
+            agent_tags = self._extract_agent_and_tags(raw_events)
             return {
                 "answer": answer,
                 "status": status,
@@ -543,6 +601,7 @@ class TalkApiClient:
                     "stream_error": had_stream_error,
                     "session_id": latest_session_id,
                 },
+                "agent_info": agent_tags,
             }
 
         return {
@@ -561,7 +620,7 @@ class TalkApiClient:
             },
         }
 
-    def debug_sse_once(self, msg: str, listen_seconds: float = 120.0) -> List[str]:
+    def debug_sse_once(self, msg: str, listen_seconds: float = 300.0) -> List[str]:
         """调试SSE流
         
         打开SSE流，发送消息，接收并打印SSE数据，同时写入到sse_debug.txt文件
@@ -664,6 +723,45 @@ class TalkApiClient:
             str(result.get("status") or "failed"),
             str(result.get("refs") or ""),
         )
+
+    def chat_with_answer_and_agent_info(
+        self, msg: str, listen_seconds: float = 120.0, max_retries: int = 1
+    ) -> Dict[str, Any]:
+        """获取带智能体和标签信息的答案
+        
+        Args:
+            msg: 要发送的消息
+            listen_seconds: 监听时间（秒）
+            max_retries: 最大重试次数
+            
+        Returns:
+            {
+                "answer": "答案",
+                "status": "状态",
+                "refs": "引用",
+                "agent_id": "智能体ID",
+                "agent_name": "智能体名称",
+                "yjbq": "一级标签",
+                "ejbq": "二级标签"
+            }
+        """
+        result = self._stream_chat_with_details(
+            msg,
+            session_id="",
+            new_dialog=True,
+            listen_seconds=listen_seconds,
+            max_retries=max_retries,
+        )
+        agent_info = result.get("agent_info") or {}
+        return {
+            "answer": str(result.get("answer") or ""),
+            "status": str(result.get("status") or "failed"),
+            "refs": str(result.get("refs") or ""),
+            "agent_id": str(agent_info.get("agent_id") or ""),
+            "agent_name": str(agent_info.get("agent_name") or ""),
+            "yjbq": str(agent_info.get("yjbq") or ""),
+            "ejbq": str(agent_info.get("ejbq") or ""),
+        }
 
     def chat_with_session(
         self,

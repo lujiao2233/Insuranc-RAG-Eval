@@ -21,6 +21,9 @@ from config.settings import settings
 
 logger = get_logger("advanced_testset_generator")
 
+MIN_CHUNK_CHARS = 30
+DEFAULT_SELECTION_MIN_CHUNK_CHARS = 100
+
 
 def _invoke_llm(llm, prompt: str, stage: str = "", trace_id: str = "", task_id: str = "", timeout: float = 120.0) -> str:
     """统一的LLM调用函数，使用OpenAI兼容接口直接调用
@@ -55,7 +58,16 @@ def _invoke_llm(llm, prompt: str, stage: str = "", trace_id: str = "", task_id: 
             api_key = str(_api_key)
         else:
             api_key = os.environ.get("DASHSCOPE_API_KEY") or os.environ.get("QWEN_API_KEY")
+        
+        if api_key:
+            api_key = api_key.strip()
+        
         base_url = str(getattr(llm, 'openai_api_base', '') or "https://dashscope.aliyuncs.com/compatible-mode/v1")
+        # 处理端点：如果配置了完整路径，去除 /chat/completions 后缀
+        if base_url.endswith("/chat/completions"):
+            base_url = base_url[:-len("/chat/completions")]
+        elif base_url.endswith("/chat/completions/"):
+            base_url = base_url[:-len("/chat/completions/")]
         model_name = getattr(llm, 'model_name', '') or 'qwen-plus'
         temperature = getattr(llm, 'temperature', 0.3) or 0.3
         max_tokens = getattr(llm, 'max_tokens', None) or 2000
@@ -1361,6 +1373,28 @@ class AdvancedTestsetGenerator:
         self._llm_api_key = None
         self._llm_model = None
         self._llm_base_url = None
+
+    def _get_chunk_content_length(self, chunk: Dict[str, Any]) -> int:
+        raw_length = chunk.get("content_length")
+        try:
+            return max(int(raw_length), 0)
+        except Exception:
+            pass
+        text = str(chunk.get("chunk") or chunk.get("content") or "").replace("\n", "").strip()
+        return len(text)
+
+    def _filter_chunks_for_generation(
+        self,
+        chunks: List[Dict[str, Any]],
+        selection_min_chunk_chars: int,
+    ) -> Tuple[List[Dict[str, Any]], bool]:
+        filtered_chunks = [
+            chunk for chunk in chunks
+            if self._get_chunk_content_length(chunk) >= selection_min_chunk_chars
+        ]
+        if filtered_chunks:
+            return filtered_chunks, False
+        return list(chunks), True
     
     def _get_api_key_and_config(self, user_id: str = None) -> tuple:
         """获取API Key和配置，优先从数据库配置获取
@@ -1752,12 +1786,14 @@ class AdvancedTestsetGenerator:
                         logger.warning(warn_msg)
 
         chunks: List[Dict[str, Any]] = []
-        min_chunk_chars = 30
-        selection_min_chunk_chars = 30
+        min_chunk_chars = MIN_CHUNK_CHARS
+        selection_min_chunk_chars = DEFAULT_SELECTION_MIN_CHUNK_CHARS
         try:
-            selection_min_chunk_chars = int(params.get("selection_min_chunk_chars", 30))
+            selection_min_chunk_chars = int(
+                params.get("selection_min_chunk_chars", DEFAULT_SELECTION_MIN_CHUNK_CHARS)
+            )
         except Exception:
-            selection_min_chunk_chars = 30
+            selection_min_chunk_chars = DEFAULT_SELECTION_MIN_CHUNK_CHARS
         if selection_min_chunk_chars < min_chunk_chars:
             selection_min_chunk_chars = min_chunk_chars
 
@@ -1796,6 +1832,7 @@ class AdvancedTestsetGenerator:
                     "doc_index": doc_index,
                     "chunk_metadata": meta,
                     "chunk_id": chunk_data.get("chunk_id", ""),
+                    "content_length": effective_len,
                     "sequence_number": chunk_data.get("sequence_number"),
                     "start_char": chunk_data.get("start_char"),
                     "end_char": chunk_data.get("end_char")
@@ -1860,7 +1897,8 @@ class AdvancedTestsetGenerator:
                         "doc_id": d.get("doc_id") or "",
                         "filename": d.get("filename") or "",
                         "doc_index": idx_doc,
-                        "chunk_metadata": meta
+                        "chunk_metadata": meta,
+                        "content_length": effective_len,
                     })
                 
         if not chunks:
@@ -1869,11 +1907,11 @@ class AdvancedTestsetGenerator:
 
         original_chunks = list(chunks)
         pre_select_count = len(chunks)
-        chunks = [
-            ch for ch in chunks
-            if len(str(ch.get("chunk") or "").replace("\n", "").strip()) >= selection_min_chunk_chars
-        ]
-        if not chunks:
+        chunks, fallback_to_original_chunks = self._filter_chunks_for_generation(
+            chunks,
+            selection_min_chunk_chars,
+        )
+        if fallback_to_original_chunks:
             logger.warning(
                 f"Qwen LLM 生成模式: 按选择阈值过滤后无可用chunk，回退使用原始chunk。"
                 + f" threshold={selection_min_chunk_chars}, original_count={pre_select_count}"

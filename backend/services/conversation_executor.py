@@ -34,6 +34,7 @@ class MultiTurnConversationExecutor:
         bot_id: str,
         task_id: str | None = None,
         api_type: str | None = None,
+        skip_answered: bool = False,
     ) -> None:
         db = SessionLocal()
         try:
@@ -61,6 +62,63 @@ class MultiTurnConversationExecutor:
             cases = self._load_cases(db, str(testset_id))
             if not cases:
                 raise RuntimeError("该多轮测试集没有 conversation cases，无法执行")
+
+            source_results_for_copy: Dict[str, ConversationTurnResult] = {}
+            answered_questions: set[str] | None = None
+            if skip_answered:
+                source_testset_id = str(
+                    (execution.execution_metadata or {}).get("source_testset_id", "")
+                )
+                if source_testset_id:
+                    source_execution = (
+                        db.query(ConversationExecution)
+                        .filter(
+                            ConversationExecution.testset_id == source_testset_id,
+                            ConversationExecution.user_id == str(user_id),
+                            ConversationExecution.status.in_(["completed", "partial_failed"]),
+                        )
+                        .order_by(ConversationExecution.finished_at.desc())
+                        .first()
+                    )
+                    if source_execution:
+                        source_results = (
+                            db.query(ConversationTurnResult)
+                            .filter(
+                                ConversationTurnResult.execution_id == str(source_execution.id),
+                                ConversationTurnResult.generated_answer.isnot(None),
+                                ConversationTurnResult.generated_answer != "",
+                            )
+                            .all()
+                        )
+                        answered_questions = {
+                            str(
+                                (r.request_payload or {}).get("msg", "")
+                            ).strip()
+                            for r in source_results
+                        }
+                        answered_questions.discard("")
+                        for r in source_results:
+                            source_results_for_copy[str(r.turn_id)] = r
+
+            cases_to_skip: set[str] = set()
+            if skip_answered and answered_questions:
+                for case in cases:
+                    turns = case.turns or []
+                    if turns and all(
+                        (t.question or "").strip() in answered_questions for t in turns
+                    ):
+                        cases_to_skip.add(str(case.id))
+                skipped_count = len(cases_to_skip)
+                if skipped_count > 0 and task_id:
+                    task_manager.append_log(
+                        task_id,
+                        f"补执行模式：跳过 {skipped_count} 个全部轮次已有答案的 case",
+                    )
+                elif skip_answered and task_id:
+                    task_manager.append_log(
+                        task_id,
+                        "补执行模式：未找到可完整跳过的 case，将执行全部 case",
+                    )
 
             total_steps = sum(len(case.turns or []) for case in cases)
             started_at = datetime.now()
@@ -98,6 +156,60 @@ class MultiTurnConversationExecutor:
 
             for case_index, case in enumerate(cases, start=1):
                 task_manager.ensure_not_cancelled(task_id)
+
+                if skip_answered and str(case.id) in cases_to_skip:
+                    case_turns = sorted(case.turns or [], key=lambda t: t.turn_index or 0)
+                    for src_turn in case_turns:
+                        turn_meta = src_turn.turn_metadata if isinstance(src_turn.turn_metadata, dict) else {}
+                        source_turn_id = str(turn_meta.get("source_turn_id", ""))
+                        src_result = source_results_for_copy.get(source_turn_id) if source_turn_id else None
+                        if src_result:
+                            copied = ConversationTurnResult(
+                                execution_id=str(execution.id),
+                                case_id=str(case.id),
+                                turn_id=str(src_turn.id),
+                                session_id_before=src_result.session_id_before,
+                                session_id_after=src_result.session_id_after,
+                                request_payload=src_result.request_payload,
+                                response_payload=src_result.response_payload,
+                                generated_answer=src_result.generated_answer or "",
+                                refs=src_result.refs or "",
+                                turn_status=src_result.turn_status or "ok",
+                                execution_time_ms=src_result.execution_time_ms or 0,
+                            )
+                            db.add(copied)
+                        else:
+                            copied = ConversationTurnResult(
+                                execution_id=str(execution.id),
+                                case_id=str(case.id),
+                                turn_id=str(src_turn.id),
+                                generated_answer="",
+                                refs="",
+                                turn_status="skipped",
+                                execution_time_ms=0,
+                            )
+                            db.add(copied)
+                    db.commit()
+                    processed_turns += len(case_turns)
+                    completed_cases += 1
+                    if evaluation:
+                        evaluation.evaluated_questions = processed_turns
+                        db.commit()
+                    self._update_case_execution_metadata(
+                        db,
+                        case,
+                        execution_id=str(execution.id),
+                        case_status="ok",
+                        executed_turns=len(case_turns),
+                        last_session_id="",
+                    )
+                    if task_id:
+                        task_manager.append_log(
+                            task_id,
+                            f"跳过 Case {case_index}/{len(cases)} (全部轮次已有答案，已复制 {len(case_turns)} 个结果)",
+                        )
+                    continue
+
                 case_status = "ok"
                 current_session_id = ""
                 executed_turns = 0
@@ -110,6 +222,7 @@ class MultiTurnConversationExecutor:
 
                 for turn_index, turn in enumerate(ordered_turns, start=1):
                     task_manager.ensure_not_cancelled(task_id)
+
                     if task_id:
                         task_manager.update_progress(
                             task_id,

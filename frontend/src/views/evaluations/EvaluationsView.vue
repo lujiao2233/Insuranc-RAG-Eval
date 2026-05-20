@@ -77,6 +77,15 @@
               >
                 评估
               </el-button>
+              <el-button
+                v-if="hasIncompleteAnswers(row)"
+                link
+                type="warning"
+                size="small"
+                @click="goReExecutePage(row)"
+              >
+                补执行
+              </el-button>
               <el-button link type="primary" size="small" @click="handleExport(row)">
                 导出
               </el-button>
@@ -152,6 +161,16 @@ const uploadForm = reactive({
 
 const isUploadedTestset = (testset: TestSet) => {
   return testset.generation_method === 'csv_import' || Boolean(testset.metadata?.imported)
+}
+
+const hasIncompleteAnswers = (testset: TestSet) => {
+  const answered = testset.answered_questions || 0
+  const total = testset.question_count || 0
+  return answered > 0 && answered < total
+}
+
+const goReExecutePage = (testset: TestSet) => {
+  router.push(`/testsets/${testset.id}/execute?skip_answered=true`)
 }
 
 const filteredTestsets = computed(() => {

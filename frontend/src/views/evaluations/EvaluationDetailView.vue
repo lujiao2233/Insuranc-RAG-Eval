@@ -177,7 +177,12 @@
 
           <el-card class="section" shadow="never" v-else-if="results.length > 0">
             <template #header>
-              <span class="card-title">评估结果</span>
+              <div class="card-header-row">
+                <span class="card-title">评估结果</span>
+                <el-button type="primary" size="small" @click="exportResultsCSV">
+                  导出CSV
+                </el-button>
+              </div>
             </template>
             <el-table :data="results" style="width: 100%" size="small">
               <el-table-column type="expand">
@@ -411,7 +416,9 @@ const parseConversationCaseType = (caseItem: ConversationEvaluationCaseResult) =
     const typeNames: Record<string, string> = {
       'single_chunk_deep': '单切片深挖',
       'same_doc_chain': '同文档链式',
-      'cross_doc_assoc': '跨文档关联'
+      'cross_doc_assoc': '跨文档关联',
+      'csv_import': 'CSV导入',
+      'multi_turn': '多轮对话',
     }
     return typeNames[caseType] || caseType || '未知'
   }
@@ -644,6 +651,63 @@ const initChart = () => {
   chartInstance.setOption(option)
 }
 
+const exportResultsCSV = () => {
+  if (results.value.length === 0) {
+    ElMessage.warning('没有可导出的数据')
+    return
+  }
+  
+  const headers = [
+    '问题ID',
+    '问题',
+    '预期答案',
+    '模型答案',
+    '问题类型',
+    '主要分类',
+    '次要分类',
+    '智能体',
+    '一级标签',
+    '二级标签',
+    '执行状态'
+  ]
+  
+  const rows = results.value.map(r => {
+    const reasons = r.reasons || {}
+    const agentName = reasons.agent_name || '无'
+    const yjbq = reasons.yjbq || '无'
+    const ejbq = reasons.ejbq || '无'
+    const execStatus = reasons.execution_status || ''
+    
+    return [
+      `"${(r.id || '').replace(/"/g, '""')}"`,
+      `"${(r.question_text || '').replace(/"/g, '""')}"`,
+      `"${(r.expected_answer || '').replace(/"/g, '""')}"`,
+      `"${(r.generated_answer || '').replace(/"/g, '""')}"`,
+      `"${(r.question_type || '').replace(/"/g, '""')}"`,
+      `"${(r.category_major || '').replace(/"/g, '""')}"`,
+      `"${(r.category_minor || '').replace(/"/g, '""')}"`,
+      `"${agentName.replace(/"/g, '""')}"`,
+      `"${yjbq.replace(/"/g, '""')}"`,
+      `"${ejbq.replace(/"/g, '""')}"`,
+      `"${execStatus.replace(/"/g, '""')}"`
+    ]
+  })
+  
+  const csvContent = [headers.join(','), ...rows].join('\n')
+  
+  const blob = new Blob(['\ufeff' + csvContent], { type: 'text/csv;charset=utf-8' })
+  const url = URL.createObjectURL(blob)
+  const link = document.createElement('a')
+  link.href = url
+  const now = new Date()
+  const pad = (n: number) => String(n).padStart(2, '0')
+  link.download = `评估结果_${now.getFullYear()}-${pad(now.getMonth() + 1)}-${pad(now.getDate())}.csv`
+  link.click()
+  URL.revokeObjectURL(url)
+  
+  ElMessage.success('导出成功')
+}
+
 onMounted(() => {
   fetchEvaluation()
 })
@@ -666,6 +730,12 @@ onUnmounted(() => {
     font-size: var(--font-16, 16px);
     font-weight: var(--fw-600, 600);
     color: var(--text-1, #303133);
+  }
+
+  .card-header-row {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
   }
 
   .metrics-chart {

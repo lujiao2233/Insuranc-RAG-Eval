@@ -513,6 +513,10 @@ evaluation_criteria: {case_payload.get("evaluation_criteria") or ""}
             )
 
         logger.info("使用 deepeval 原生多轮评估指标执行")
+        import os
+        os.environ["DEEPEVAL_PER_TASK_TIMEOUT_SECONDS_OVERRIDE"] = "600"
+        os.environ["DEEPEVAL_TASK_GATHER_BUFFER_SECONDS_OVERRIDE"] = "30"
+        os.environ["DEEPEVAL_RETRY_MAX_ATTEMPTS"] = "2"
         from deepeval.metrics import (
             KnowledgeRetentionMetric,
             ConversationCompletenessMetric,
@@ -520,6 +524,39 @@ evaluation_criteria: {case_payload.get("evaluation_criteria") or ""}
             TurnRelevancyMetric,
         )
         from deepeval.test_case import Turn, ConversationalTestCase
+        from deepeval.models import DeepEvalBaseLLM
+        from openai import OpenAI
+
+        api_key = (llm_config or {}).get("api_key") or os.getenv("DASHSCOPE_API_KEY") or os.getenv("QWEN_API_KEY") or os.getenv("OPENAI_API_KEY")
+        base_url = (llm_config or {}).get("base_url") or os.getenv("OPENAI_BASE_URL") or "https://dashscope.aliyuncs.com/compatible-mode/v1"
+        model_name = (llm_config or {}).get("model") or os.getenv("QWEN_MODEL", "qwen-plus")
+
+        class QwenConversationLLM(DeepEvalBaseLLM):
+            def __init__(self):
+                self._sync_client = OpenAI(api_key=api_key, base_url=base_url)
+                self._async_client = None
+                self.model = model_name
+
+            def load_model(self):
+                return self._sync_client
+
+            def get_model_name(self) -> str:
+                return self.model
+
+            def generate(self, prompt: str) -> str:
+                completion = self._sync_client.chat.completions.create(
+                    model=self.model,
+                    messages=[{"role": "user", "content": prompt}],
+                    temperature=0.0,
+                    max_tokens=2000,
+                )
+                return completion.choices[0].message.content or ""
+
+            async def a_generate(self, prompt: str) -> str:
+                import asyncio
+                return await asyncio.to_thread(self.generate, prompt)
+
+        custom_llm = QwenConversationLLM()
 
         metric_map = {
             "knowledge_retention": KnowledgeRetentionMetric,
@@ -532,7 +569,7 @@ evaluation_criteria: {case_payload.get("evaluation_criteria") or ""}
         for metric_name in evaluation_metrics:
             metric_cls = metric_map.get(metric_name)
             if metric_cls:
-                deepeval_metrics.append(metric_cls(threshold=0.5, include_reason=True))
+                deepeval_metrics.append(metric_cls(threshold=0.5, include_reason=True, model=custom_llm))
 
         from deepeval import evaluate as deepeval_evaluate
 
@@ -547,17 +584,30 @@ evaluation_criteria: {case_payload.get("evaluation_criteria") or ""}
                     if turn_result_payload:
                         generated = turn_result_payload.get("generated_answer", "")
 
+                assistant_content = generated or "未回复"
                 deepeval_turns.append(
                     Turn(role="user", content=raw_turn.get("question", ""))
                 )
                 deepeval_turns.append(
-                    Turn(role="assistant", content=generated or "未回复")
+                    Turn(role="assistant", content=assistant_content)
                 )
 
             conversation_test_case = ConversationalTestCase(
                 turns=deepeval_turns,
             )
             test_cases.append(conversation_test_case)
+
+        if test_cases:
+            sample = cases[0] if cases else {}
+            sample_turns = sample.get("turns") or []
+            empty_ans_count = sum(1 for t in sample_turns if not (t.get("generated_answer") or "").strip())
+            logger.info(
+                "多轮DeepEval诊断: 总case=%d, 首个case=%d轮, 首case空答案turn数=%d/%d",
+                len(cases), len(sample_turns), empty_ans_count, len(sample_turns),
+            )
+            for ti, st in enumerate(sample_turns[:4]):
+                ga = (st.get("generated_answer") or "")[:80]
+                logger.info("  turn[%d] generated_answer=%s", ti + 1, repr(ga))
 
         if not test_cases:
             return {
@@ -573,7 +623,26 @@ evaluation_criteria: {case_payload.get("evaluation_criteria") or ""}
                 "overall_metrics": {},
             }
 
-        result = deepeval_evaluate(test_cases=test_cases, metrics=deepeval_metrics)
+        batch_size = int((run_config or {}).get("batch_size") or self._load_evaluation_config().get("batch_size") or 5)
+
+        all_results = []
+        total_cases = len(test_cases)
+        for batch_start in range(0, total_cases, batch_size):
+            batch_end = min(batch_start + batch_size, total_cases)
+            batch_cases = test_cases[batch_start:batch_end]
+            logger.info(
+                "多轮评估批次 %d-%d/%d, 并发数=%d",
+                batch_start + 1, batch_end, total_cases, batch_size,
+            )
+            batch_result = deepeval_evaluate(test_cases=batch_cases, metrics=deepeval_metrics)
+            batch_test_results = getattr(batch_result, 'test_results', None) or getattr(batch_result, 'results', None) or []
+            all_results.extend(batch_test_results)
+
+        class MergedResult:
+            def __init__(self, test_results):
+                self.test_results = test_results
+
+        result = MergedResult(all_results)
 
         case_results = []
         turn_results = []
@@ -584,10 +653,12 @@ evaluation_criteria: {case_payload.get("evaluation_criteria") or ""}
             case_metrics = {}
             case_reasons = {}
 
-            if result.results and idx - 1 < len(result.results):
-                eval_result = result.results[idx - 1]
-                for metric in eval_result.metrics:
-                    metric_name = metric.__class__.__name__.lower().replace("metric", "")
+            if result.test_results and idx - 1 < len(result.test_results):
+                eval_result = result.test_results[idx - 1]
+                metrics_data = getattr(eval_result, 'metrics_data', None) or getattr(eval_result, 'metrics', None) or []
+                for metric in metrics_data:
+                    metric_name_raw = getattr(metric, 'name', '') or getattr(metric, '__class__', type).__name__.lower().replace("metric", "")
+                    metric_name = metric_name_raw.lower().replace("metric", "").replace("_", "").replace(" ", "")
                     display_map = {
                         "knowledgeretention": "knowledge_retention",
                         "conversationcompleteness": "conversation_completeness",
@@ -597,8 +668,12 @@ evaluation_criteria: {case_payload.get("evaluation_criteria") or ""}
                         "conversationrelevance": "conversation_relevancy",
                     }
                     canonical_name = display_map.get(metric_name, metric_name)
-                    case_metrics[canonical_name] = getattr(metric, "score", 0.0) or 0.0
-                    case_reasons[canonical_name] = getattr(metric, "reason", "") or "无"
+                    score = getattr(metric, "score", 0.0)
+                    if score is None:
+                        score = 0.0
+                    reason = getattr(metric, "reason", "") or "无"
+                    case_metrics[canonical_name] = float(score)
+                    case_reasons[canonical_name] = str(reason)
 
             case_results.append(
                 {
@@ -631,6 +706,34 @@ evaluation_criteria: {case_payload.get("evaluation_criteria") or ""}
                 )
 
         overall_metrics = self._calculate_overall_metrics(case_results)
+
+        all_reasons_to_translate = []
+        for cr in case_results:
+            for k, v in cr.get("reasons", {}).items():
+                if v and v != "无":
+                    all_reasons_to_translate.append(v)
+        for tr in turn_results:
+            for k, v in tr.get("reasons", {}).items():
+                if v and v != "无":
+                    all_reasons_to_translate.append(v)
+
+        if all_reasons_to_translate:
+            try:
+                translated = self._translate_reasons_to_chinese(all_reasons_to_translate, llm_config)
+                reason_idx = 0
+                for cr in case_results:
+                    for k in list(cr.get("reasons", {}).keys()):
+                        if cr["reasons"][k] and cr["reasons"][k] != "无" and reason_idx < len(translated):
+                            cr["reasons"][k] = translated[reason_idx]
+                            reason_idx += 1
+                for tr in turn_results:
+                    for k in list(tr.get("reasons", {}).keys()):
+                        if tr["reasons"][k] and tr["reasons"][k] != "无" and reason_idx < len(translated):
+                            tr["reasons"][k] = translated[reason_idx]
+                            reason_idx += 1
+            except Exception as e:
+                logger.warning(f"翻译评估理由失败: {e}")
+
         return {
             "evaluation_id": f"conversation_eval_{int(time.time())}",
             "evaluation_method": "deepeval_conversation",
@@ -643,6 +746,42 @@ evaluation_criteria: {case_payload.get("evaluation_criteria") or ""}
             "turn_results": turn_results,
             "overall_metrics": overall_metrics,
         }
+
+    def _translate_reasons_to_chinese(self, reasons: List[str], llm_config: Dict[str, str] = None) -> List[str]:
+        if not reasons:
+            return []
+
+        runtime_cfg = llm_config or self._configure_llm_environment(require_db_config=True)
+        api_key = runtime_cfg.get("api_key")
+        base_url = runtime_cfg.get("base_url")
+        model = runtime_cfg.get("model") or "qwen-plus"
+
+        if not api_key or not base_url:
+            raise RuntimeError("缺少LLM配置，无法翻译评估理由")
+
+        from openai import OpenAI
+        client = OpenAI(api_key=api_key, base_url=base_url)
+        system_prompt = "你是一个专业的翻译助手，需要将评估理由准确翻译成中文。保持专业术语的准确性，维持原有的评分解释逻辑。只返回翻译结果，不要添加额外内容。"
+
+        translated = []
+        for reason in reasons:
+            try:
+                response = client.chat.completions.create(
+                    model=model,
+                    messages=[
+                        {"role": "system", "content": system_prompt},
+                        {"role": "user", "content": reason}
+                    ],
+                    temperature=0.3,
+                    max_tokens=1000
+                )
+                translated_text = response.choices[0].message.content or ""
+                translated.append(translated_text.strip())
+            except Exception as e:
+                logger.warning(f"翻译单个理由失败: {e}, 原文: {reason[:50]}...")
+                translated.append(reason)
+
+        return translated
 
     def _evaluate_conversations_with_fallback(
         self,
@@ -769,6 +908,10 @@ evaluation_criteria: {case_payload.get("evaluation_criteria") or ""}
                 api_key = str(db_api_key)
             if db_base_url:
                 base_url = str(db_base_url)
+                if base_url.endswith("/chat/completions"):
+                    base_url = base_url[:-len("/chat/completions")]
+                elif base_url.endswith("/chat/completions/"):
+                    base_url = base_url[:-len("/chat/completions/")]
             if db_eval_model:
                 model = str(db_eval_model)
             elif db_gen_model:
